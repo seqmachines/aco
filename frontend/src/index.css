@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+/* Light mode (default) */
+@theme {
+  /* Clean, scientific color palette */
+  --color-primary: oklch(0.55 0.2 250);
+  --color-primary-foreground: oklch(0.98 0.01 250);
+  --color-secondary: oklch(0.45 0.12 180);
+  --color-secondary-foreground: oklch(0.98 0.01 180);
+  --color-accent: oklch(0.5 0.15 145);
+  --color-accent-foreground: oklch(0.98 0.01 145);
+  
+  --color-background: oklch(0.985 0.005 260);
+  --color-foreground: oklch(0.15 0.02 260);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.15 0.02 260);
+  --color-popover: oklch(1 0 0);
+  --color-popover-foreground: oklch(0.15 0.02 260);
+  
+  --color-muted: oklch(0.95 0.01 260);
+  --color-muted-foreground: oklch(0.45 0.02 260);
+  --color-border: oklch(0.88 0.01 260);
+  --color-input: oklch(0.97 0.005 260);
+  --color-ring: oklch(0.55 0.2 250);
+  
+  --color-destructive: oklch(0.55 0.22 25);
+  --color-destructive-foreground: oklch(0.98 0.01 25);
+  
+  --color-success: oklch(0.55 0.18 145);
+  --color-warning: oklch(0.65 0.18 85);
+  
+  /* File type colors */
+  --color-fastq: oklch(0.5 0.18 145);
+  --color-bam: oklch(0.5 0.18 250);
+  --color-cellranger: oklch(0.55 0.16 30);
+  --color-vcf: oklch(0.5 0.18 300);
+  
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.25rem;
+  
+  --font-sans: "Geist", "Geist Sans", system-ui, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", monospace;
+}
+
+/* Dark mode */
+.dark {
+  --color-primary: oklch(0.65 0.2 250);
+  --color-primary-foreground: oklch(0.98 0.01 250);
+  --color-secondary: oklch(0.55 0.15 180);
+  --color-secondary-foreground: oklch(0.98 0.01 180);
+  --color-accent: oklch(0.7 0.18 145);
+  --color-accent-foreground: oklch(0.15 0.02 145);
+  
+  --color-background: oklch(0.12 0.02 260);
+  --color-foreground: oklch(0.93 0.01 260);
+  --color-card: oklch(0.16 0.025 260);
+  --color-card-foreground: oklch(0.93 0.01 260);
+  --color-popover: oklch(0.14 0.02 260);
+  --color-popover-foreground: oklch(0.93 0.01 260);
+  
+  --color-muted: oklch(0.25 0.02 260);
+  --color-muted-foreground: oklch(0.65 0.02 260);
+  --color-border: oklch(0.3 0.03 260);
+  --color-input: oklch(0.22 0.025 260);
+  --color-ring: oklch(0.65 0.2 250);
+  
+  --color-destructive: oklch(0.55 0.2 25);
+  --color-destructive-foreground: oklch(0.98 0.01 25);
+  
+  --color-success: oklch(0.6 0.18 145);
+  --color-warning: oklch(0.7 0.18 85);
+  
+  --color-fastq: oklch(0.65 0.2 145);
+  --color-bam: oklch(0.6 0.2 250);
+  --color-cellranger: oklch(0.65 0.18 30);
+  --color-vcf: oklch(0.6 0.2 300);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    margin: 0;
+    min-height: 100vh;
+  }
+  
+  #root {
+    min-height: 100vh;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-muted;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-border rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/50;
+}
+
+/* Subtle background pattern */
+.bg-grid-pattern {
+  background-image: 
+    linear-gradient(oklch(0.9 0.01 260 / 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.9 0.01 260 / 0.5) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.dark .bg-grid-pattern {
+  background-image: 
+    linear-gradient(oklch(0.2 0.02 260 / 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.2 0.02 260 / 0.5) 1px, transparent 1px);
+}
+
+/* Glow effects */
+.glow-primary {
+  box-shadow: 0 0 20px oklch(0.55 0.2 250 / 0.2);
+}
+
+.dark .glow-primary {
+  box-shadow: 0 0 20px oklch(0.65 0.2 250 / 0.3);
+}
+
+.glow-accent {
+  box-shadow: 0 0 20px oklch(0.5 0.15 145 / 0.2);
+}
+
+.dark .glow-accent {
+  box-shadow: 0 0 20px oklch(0.7 0.18 145 / 0.3);
+}
