@@ -1,14 +1,7 @@
-# aco: Agentic Sequencing Quality Control
+# aco
 
-Automate sequencing quality control with LLM-driven experiment understanding. aco uses Google Gemini to analyze your sequencing data manifests and provide intelligent QC recommendations.
+Automate sequencing quality control with LLM-driven experiment understanding and analysis. `aco` uses Google Gemini to analyze your sequencing data manifests and provide intelligent QC diagnostics.
 
-## Features
-
-- **File Scanner**: Automatically discovers FASTQ, BAM, CellRanger outputs, and other sequencing files
-- **Manifest Builder**: Combines user descriptions with discovered file metadata
-- **LLM Understanding**: Uses Gemini to infer experiment type, assay details, and quality concerns
-- **Human-in-the-Loop**: Interactive UI for reviewing and approving LLM-generated insights
-- **QC Recommendations**: Get tailored quality control check suggestions
 
 ## Quick Start
 
@@ -69,31 +62,6 @@ uv run aco version
 3. **Run aco** - `uv run aco init`
 4. **Use the web UI** - Describe your experiment, review files, get LLM analysis
 
-## Architecture
-
-```
-aco/
-├── aco/                    # Python backend
-│   ├── cli.py             # CLI commands (aco init, scan, etc.)
-│   ├── static/            # Built frontend (included in package)
-│   ├── api/               # FastAPI routes
-│   │   ├── main.py        # App entry point
-│   │   └── routes/        # API endpoints
-│   ├── engine/            # LLM integration
-│   │   ├── gemini.py      # Gemini API client
-│   │   ├── understanding.py  # Prompt templates
-│   │   └── models.py      # Understanding schemas
-│   └── manifest/          # Data handling
-│       ├── scanner.py     # File discovery
-│       ├── builder.py     # Manifest creation
-│       └── models.py      # Data schemas
-├── frontend/              # React UI source
-│   └── src/
-│       ├── components/    # UI components
-│       ├── hooks/         # API hooks
-│       └── types/         # TypeScript types
-└── pyproject.toml         # Python dependencies
-```
 
 ## Configuration
 
@@ -104,36 +72,3 @@ Your API key is saved to `~/.aco/config` after first run.
 | Google API Key | Prompted on first run, saved to ~/.aco/config |
 | Storage | Project data saved to `.aco/` in working directory |
 
-## Supported File Types
-
-- **FASTQ**: `.fastq`, `.fastq.gz`, `.fq`, `.fq.gz`
-- **Alignments**: `.bam`, `.sam`, `.cram`
-- **Variants**: `.vcf`, `.vcf.gz`, `.bcf`
-- **Annotations**: `.bed`, `.gtf`, `.gff`
-- **CellRanger**: Automatic detection of `outs/` directories
-
-## Development
-
-### Rebuild Frontend
-
-```bash
-cd frontend
-npm install
-npm run build
-cp -r dist ../aco/static
-```
-
-### Run in Development Mode
-
-```bash
-# Terminal 1: Backend
-uv run uvicorn aco.api.main:app --reload --port 7878
-
-# Terminal 2: Frontend (with hot reload)
-cd frontend
-npm run dev
-```
-
-## License
-
-MIT
