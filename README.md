@@ -17,7 +17,7 @@ Automate sequencing quality control with LLM-driven experiment understanding and
 # Install from source
 git clone https://github.com/seqmachines/aco
 cd aco
-uv sync
+uv tool install .
 ```
 
 ### Usage
@@ -27,7 +27,7 @@ uv sync
 cd /path/to/your/sequencing/data
 
 # Run aco (will prompt for API key on first run)
-uv run aco init
+aco init
 ```
 
 That's it! aco will:

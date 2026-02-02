@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-aco = "aco.cli:main"
+aco = "aco.cli:app"
 
 [project.optional-dependencies]
 dev = [

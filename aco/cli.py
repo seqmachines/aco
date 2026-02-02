@@ -16,6 +16,8 @@ app = typer.Typer(
     name="aco",
     help="aco - Agentic Sequencing Quality Control\n\nAutomate sequencing QC with LLM-driven experiment understanding.",
     add_completion=False,
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
@@ -51,16 +53,19 @@ def save_api_key_to_config(api_key: str) -> bool:
 
 def get_or_prompt_api_key() -> str | None:
     """Get API key from environment, saved config, or prompt user."""
-    # Check environment first
-    api_key = os.getenv("GOOGLE_API_KEY")
+    # Check environment first (support both common env var names)
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if api_key:
+        env_var = "GOOGLE_API_KEY" if os.getenv("GOOGLE_API_KEY") else "GEMINI_API_KEY"
+        console.print(f"[dim]Using API key from {env_var} environment variable[/dim]")
+        os.environ["GOOGLE_API_KEY"] = api_key  # Ensure it's set for google-genai SDK
         return api_key
     
     # Check saved config
     api_key = load_saved_api_key()
     if api_key:
         os.environ["GOOGLE_API_KEY"] = api_key
-        console.print(f"[dim]Using saved API key from ~/.aco/config[/dim]")
+        console.print("[dim]Using saved API key from ~/.aco/config[/dim]")
         return api_key
     
     console.print()

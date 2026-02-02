@@ -234,3 +234,27 @@ export interface AppState {
   isLoading: boolean;
   error: string | null;
 }
+
+// Intake form data (for auto-save)
+export interface IntakeFormData {
+  experiment_description: string;
+  target_directory: string;
+  goals?: string;
+  known_issues?: string;
+  additional_notes?: string;
+  uploaded_files?: UploadedFile[];
+}
+
+export interface UploadedFile {
+  name: string;
+  size: number;
+  type: string;
+  dataUrl?: string; // For images
+  content?: string; // For text files
+}
+
+// Config response
+export interface ConfigResponse {
+  working_dir: string;
+  storage_dir: string;
+}
