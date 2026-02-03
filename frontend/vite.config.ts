@@ -17,6 +17,10 @@ export default defineConfig({
       '/scan': { target: 'http://localhost:8000', changeOrigin: true },
       '/manifest': { target: 'http://localhost:8000', changeOrigin: true },
       '/understanding': { target: 'http://localhost:8000', changeOrigin: true },
+      '/scripts': { target: 'http://localhost:8000', changeOrigin: true },
+      '/notebooks': { target: 'http://localhost:8000', changeOrigin: true },
+      '/reports': { target: 'http://localhost:8000', changeOrigin: true },
+      '/runs': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

@@ -4,6 +4,10 @@ import { IntakeForm } from "@/components/IntakeForm"
 import { FileScanner } from "@/components/FileScanner"
 import { ManifestViewer } from "@/components/ManifestViewer"
 import { UnderstandingEditor } from "@/components/UnderstandingEditor"
+import { ScriptRunner } from "@/components/ScriptRunner"
+import { NotebookEditor } from "@/components/NotebookEditor"
+import { ReportViewer } from "@/components/ReportViewer"
+import { RunSelector } from "@/components/RunSelector"
 import { Settings } from "@/components/Settings"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,6 +30,9 @@ const sections: SidebarSection[] = [
   { id: "scanning", label: "Scanning Files", shortLabel: "Scan" },
   { id: "manifest", label: "Review Discovered Data", shortLabel: "Review" },
   { id: "understanding", label: "AI-Powered Analysis", shortLabel: "Analyze" },
+  { id: "scripts", label: "Generate & Execute Scripts", shortLabel: "Scripts" },
+  { id: "notebook", label: "Analysis Notebook", shortLabel: "Notebook" },
+  { id: "report", label: "QC Report", shortLabel: "Report" },
   { id: "approved", label: "Analysis Complete", shortLabel: "Complete" },
 ]
 
@@ -42,12 +49,13 @@ function App() {
   const { config } = useConfig()
   const { savedData, saveData, clearData } = useAutoSave()
 
-  const { submitIntake, isLoading: intakeLoading } = useIntake()
-  const { updateManifest, isLoading: manifestLoading } = useManifest()
+  const { submitIntake, isLoading: intakeLoading, error: intakeError } = useIntake()
+  const { updateManifest, isLoading: manifestLoading, error: manifestError } = useManifest()
   const {
     generateUnderstanding,
     approveUnderstanding,
     isLoading: understandingLoading,
+    error: understandingError,
   } = useUnderstanding()
 
   // Get the default directory from config (where aco was started)
@@ -99,25 +107,39 @@ function App() {
     setError(null)
     setCurrentStep("understanding")
 
-    const result = await generateUnderstanding(manifest.id)
+    const result = await generateUnderstanding(
+      manifest.id,
+      false,
+      settings.model,
+      settings.apiKey
+    )
     if (result) {
       setUnderstanding(result.understanding)
     } else {
-      setError("Failed to generate understanding. Make sure GOOGLE_API_KEY is set.")
+      // Go back to Manifest Review step and open settings
+      setCurrentStep("manifest")
+      setSettingsOpen(true)
     }
-  }, [manifest, generateUnderstanding])
+  }, [manifest, generateUnderstanding, settings.model, settings.apiKey])
 
   const handleRegenerate = useCallback(async () => {
     if (!manifest) return
 
     setError(null)
-    const result = await generateUnderstanding(manifest.id, true)
+    const result = await generateUnderstanding(
+      manifest.id,
+      true,
+      settings.model,
+      settings.apiKey
+    )
     if (result) {
       setUnderstanding(result.understanding)
     } else {
-      setError("Failed to regenerate understanding.")
+      // Go back to Manifest Review step and open settings
+      setCurrentStep("manifest")
+      setSettingsOpen(true)
     }
-  }, [manifest, generateUnderstanding])
+  }, [manifest, generateUnderstanding, settings.model, settings.apiKey])
 
   const handleApprove = useCallback(
     async (edits?: Record<string, string>) => {
@@ -127,7 +149,7 @@ function App() {
       const result = await approveUnderstanding(manifest.id, edits)
       if (result) {
         setUnderstanding(result.understanding)
-        setCurrentStep("approved")
+        setCurrentStep("scripts")
       } else {
         setError("Failed to approve understanding.")
       }
@@ -147,7 +169,7 @@ function App() {
   const handleSectionClick = (sectionId: AppStep) => {
     const currentIndex = sections.findIndex(s => s.id === currentStep)
     const targetIndex = sections.findIndex(s => s.id === sectionId)
-    
+
     // Only allow navigating to completed or current sections
     if (targetIndex <= currentIndex) {
       setCurrentStep(sectionId)
@@ -231,6 +253,36 @@ function App() {
           )}
         </div>
 
+        {/* Run Selector */}
+        {!sidebarCollapsed && (
+          <div className="px-2 py-2 border-b border-border">
+            <RunSelector
+              currentManifestId={manifest?.id || null}
+              onSelectRun={async (manifestId) => {
+                // Load run - fetch manifest and understanding
+                try {
+                  const manifestRes = await fetch(`/manifest/${manifestId}`)
+                  if (manifestRes.ok) {
+                    const data = await manifestRes.json()
+                    setManifest(data.manifest)
+                  }
+                  const understandingRes = await fetch(`/understanding/${manifestId}`)
+                  if (understandingRes.ok) {
+                    const data = await understandingRes.json()
+                    setUnderstanding(data.understanding)
+                    setCurrentStep("understanding")
+                  } else {
+                    setCurrentStep("manifest")
+                  }
+                } catch (e) {
+                  setError("Failed to load run")
+                }
+              }}
+              onNewRun={handleStartOver}
+            />
+          </div>
+        )}
+
         {/* Navigation Sections */}
         <nav className={cn("flex-1 py-2", sidebarCollapsed ? "px-2" : "px-2")}>
           {sections.map((section, index) => {
@@ -302,6 +354,11 @@ function App() {
               </h2>
             </div>
             <div className="flex items-center gap-2">
+              {manifest && (
+                <Badge variant="outline" className="text-[10px] font-mono">
+                  {manifest.id}
+                </Badge>
+              )}
               {currentStep === "intake" && savedData && (
                 <Badge variant="secondary" className="text-[10px]">
                   <Circle className="h-1.5 w-1.5 mr-1 fill-success text-success" />
@@ -346,17 +403,20 @@ function App() {
         {/* Main Content */}
         <main className="flex-1 p-6 overflow-auto">
           {/* Error Banner */}
-          {error && (
+          {/* Error Banner */}
+          {(error || intakeError || manifestError || understandingError) && (
             <Card className="mb-6 border-destructive/50 bg-destructive/10">
               <CardContent className="py-3">
-                <p className="text-destructive text-sm">{error}</p>
+                <p className="text-destructive text-sm">
+                  {error || intakeError || manifestError || understandingError}
+                </p>
               </CardContent>
             </Card>
           )}
 
           {/* Step Content */}
           {currentStep === "intake" && (
-            <div className="max-w-3xl">
+            <div className="max-w-4xl mx-auto">
               <IntakeForm
                 onSubmit={handleIntakeSubmit}
                 isLoading={isLoading}
@@ -368,13 +428,13 @@ function App() {
           )}
 
           {currentStep === "scanning" && (
-            <div className="max-w-3xl">
+            <div className="max-w-4xl mx-auto">
               <FileScanner scanResult={null} isLoading={true} />
             </div>
           )}
 
           {currentStep === "manifest" && manifest && (
-            <div className="max-w-4xl">
+            <div className="max-w-5xl mx-auto">
               <ManifestViewer
                 manifest={manifest}
                 onUpdate={handleManifestUpdate}
@@ -385,7 +445,7 @@ function App() {
           )}
 
           {currentStep === "understanding" && (
-            <div className="max-w-4xl">
+            <div className="max-w-5xl mx-auto">
               <UnderstandingEditor
                 understanding={understanding}
                 isLoading={understandingLoading}
@@ -395,8 +455,59 @@ function App() {
             </div>
           )}
 
+          {currentStep === "scripts" && manifest && (
+            <div className="max-w-5xl mx-auto">
+              <ScriptRunner
+                manifestId={manifest.id}
+                onComplete={() => setCurrentStep("notebook")}
+              />
+              <div className="flex justify-between mt-6 pt-4 border-t">
+                <Button variant="outline" onClick={() => setCurrentStep("understanding")}>
+                  Back to Understanding
+                </Button>
+                <Button onClick={() => setCurrentStep("notebook")}>
+                  Proceed to Notebook
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {currentStep === "notebook" && manifest && (
+            <div className="max-w-5xl mx-auto">
+              <NotebookEditor
+                manifestId={manifest.id}
+                onComplete={() => setCurrentStep("report")}
+              />
+              <div className="flex justify-between mt-6 pt-4 border-t">
+                <Button variant="outline" onClick={() => setCurrentStep("scripts")}>
+                  Back to Scripts
+                </Button>
+                <Button onClick={() => setCurrentStep("report")}>
+                  Proceed to Report
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {currentStep === "report" && manifest && (
+            <div className="max-w-5xl mx-auto">
+              <ReportViewer
+                manifestId={manifest.id}
+                onComplete={() => setCurrentStep("approved")}
+              />
+              <div className="flex justify-between mt-6 pt-4 border-t">
+                <Button variant="outline" onClick={() => setCurrentStep("notebook")}>
+                  Back to Notebook
+                </Button>
+                <Button onClick={() => setCurrentStep("approved")}>
+                  Complete Analysis
+                </Button>
+              </div>
+            </div>
+          )}
+
           {currentStep === "approved" && understanding && (
-            <div className="max-w-4xl">
+            <div className="max-w-5xl mx-auto">
               <Card className="border-success/30 bg-success/5">
                 <CardContent className="py-8 text-center">
                   <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-success/20 mb-4">

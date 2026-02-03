@@ -168,6 +168,42 @@ export interface AssayStructure {
   annotation_version: string | null;
 }
 
+// Read segment (barcode, UMI, insert, etc.)
+export interface ReadSegment {
+  name: string;
+  segment_type: string;
+  start_position: number;
+  end_position: number;
+  length: number;
+  read_number: number;
+  description: string | null;
+  whitelist_file: string | null;
+}
+
+// Read structure definition
+export interface ReadStructure {
+  assay_name: string;
+  total_reads: number;
+  read1_length: number | null;
+  read2_length: number | null;
+  index1_length: number | null;
+  index2_length: number | null;
+  segments: ReadSegment[];
+  has_umi: boolean;
+  has_cell_barcode: boolean;
+  has_sample_barcode: boolean;
+  confidence: number;
+  detection_notes: string | null;
+}
+
+// Detected script
+export interface DetectedScript {
+  filename: string;
+  name: string;
+  purpose: string | null;
+  description: string | null;
+}
+
 // Experiment understanding
 export interface ExperimentUnderstanding {
   experiment_type: ExperimentType;
@@ -176,6 +212,8 @@ export interface ExperimentUnderstanding {
   assay_name: string;
   assay_platform: AssayPlatform;
   assay_structure: AssayStructure | null;
+  read_structure: ReadStructure | null;
+  detected_scripts: DetectedScript[];
   sample_count: number;
   samples: SampleInfo[];
   expected_cells_total: number | null;
@@ -225,7 +263,7 @@ export interface ApprovalResponse {
 }
 
 // App state types
-export type AppStep = "intake" | "scanning" | "manifest" | "understanding" | "approved";
+export type AppStep = "intake" | "scanning" | "manifest" | "understanding" | "scripts" | "notebook" | "report" | "approved";
 
 export interface AppState {
   currentStep: AppStep;

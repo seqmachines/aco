@@ -12,11 +12,19 @@ from fastapi.responses import FileResponse
 from aco.api.routes import (
     intake_router,
     manifest_router,
+    notebooks_router,
+    reports_router,
+    runs_router,
     scan_router,
+    scripts_router,
     understanding_router,
 )
 from aco.api.routes.intake import set_store as set_intake_store
 from aco.api.routes.manifest import set_store as set_manifest_store
+from aco.api.routes.notebooks import set_stores as set_notebooks_stores
+from aco.api.routes.reports import set_stores as set_reports_stores
+from aco.api.routes.runs import set_stores as set_runs_stores
+from aco.api.routes.scripts import set_stores as set_scripts_stores
 from aco.api.routes.understanding import set_stores as set_understanding_stores
 from aco.engine import UnderstandingStore
 from aco.manifest import ManifestStore
@@ -76,6 +84,10 @@ async def lifespan(app: FastAPI):
     # Set stores on routers
     set_intake_store(manifest_store)
     set_manifest_store(manifest_store)
+    set_notebooks_stores(manifest_store, understanding_store)
+    set_reports_stores(manifest_store, understanding_store)
+    set_runs_stores(manifest_store, understanding_store)
+    set_scripts_stores(manifest_store, understanding_store)
     set_understanding_stores(manifest_store, understanding_store)
     
     # Store references on app state for access elsewhere
@@ -119,6 +131,10 @@ def create_app() -> FastAPI:
     app.include_router(intake_router)
     app.include_router(scan_router)
     app.include_router(manifest_router)
+    app.include_router(notebooks_router)
+    app.include_router(reports_router)
+    app.include_router(runs_router)
+    app.include_router(scripts_router)
     app.include_router(understanding_router)
     
     @app.get("/api/health")

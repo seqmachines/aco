@@ -227,7 +227,9 @@ export function useUnderstanding() {
   const generateUnderstanding = useCallback(
     async (
       manifestId: string,
-      regenerate = false
+      regenerate = false,
+      model?: string,
+      apiKey?: string
     ): Promise<UnderstandingResponse | null> => {
       setIsLoading(true)
       setError(null)
@@ -239,6 +241,8 @@ export function useUnderstanding() {
           body: JSON.stringify({
             manifest_id: manifestId,
             regenerate,
+            model,
+            api_key: apiKey,
           }),
         })
 

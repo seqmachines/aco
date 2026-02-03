@@ -29,11 +29,11 @@ class GeminiClient:
             api_key: Google AI API key (defaults to GOOGLE_API_KEY env var)
             model_name: Model to use for generation
         """
-        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError(
-                "Google API key required. Set GOOGLE_API_KEY environment variable "
-                "or pass api_key parameter."
+                "Google API key required. Set GOOGLE_API_KEY or GEMINI_API_KEY "
+                "environment variable or pass api_key parameter."
             )
         
         self.client = genai.Client(api_key=self.api_key)

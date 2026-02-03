@@ -20,6 +20,8 @@ class UnderstandingRequest(BaseModel):
     
     manifest_id: str
     regenerate: bool = False
+    model: str | None = None
+    api_key: str | None = None
 
 
 class UnderstandingResponse(BaseModel):
@@ -101,8 +103,19 @@ async def generate_understanding_endpoint(
         )
     
     try:
+        # Determine which client to use
+        client = None
+        api_key_to_use = request.api_key.strip() if request.api_key and request.api_key.strip() else None
+        
+        if api_key_to_use or request.model:
+            from aco.engine import GeminiClient
+            client = GeminiClient(
+                api_key=api_key_to_use,
+                model_name=request.model or "gemini-3-pro-preview"
+            )
+            
         # Generate understanding
-        understanding = await generate_understanding_async(manifest)
+        understanding = await generate_understanding_async(manifest, client=client)
         
         # Save it
         understanding_store.save(request.manifest_id, understanding)

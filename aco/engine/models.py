@@ -113,6 +113,44 @@ class AssayStructure(BaseModel):
     )
 
 
+class ReadSegment(BaseModel):
+    """A segment within a sequencing read (barcode, UMI, insert, etc.)."""
+    
+    name: str = Field(..., description="Segment name (e.g., 'Cell Barcode', 'UMI', 'Insert')")
+    segment_type: str = Field(..., description="Type: barcode, umi, insert, linker, index, polyT, other")
+    start_position: int = Field(..., description="Start position (1-based)")
+    end_position: int = Field(..., description="End position (1-based, inclusive)")
+    length: int = Field(..., description="Segment length in bp")
+    read_number: int = Field(default=1, description="Which read (1, 2, or index read I1/I2)")
+    description: str | None = Field(default=None, description="Additional description")
+    whitelist_file: str | None = Field(default=None, description="Barcode whitelist filename if applicable")
+
+
+class ReadStructure(BaseModel):
+    """Complete read structure definition for a sequencing assay."""
+    
+    assay_name: str = Field(..., description="Name of the assay (e.g., '10x Chromium 3' v3')")
+    total_reads: int = Field(default=2, description="Number of reads (typically 2 for PE)")
+    read1_length: int | None = Field(default=None, description="Read 1 length")
+    read2_length: int | None = Field(default=None, description="Read 2 length")
+    index1_length: int | None = Field(default=None, description="Index 1 (I1) length")
+    index2_length: int | None = Field(default=None, description="Index 2 (I2) length")
+    
+    # Detailed segment breakdown
+    segments: list[ReadSegment] = Field(
+        default_factory=list, description="All segments in order"
+    )
+    
+    # Summary flags
+    has_umi: bool = Field(default=False, description="Whether UMI is present")
+    has_cell_barcode: bool = Field(default=False, description="Whether cell barcode is present")
+    has_sample_barcode: bool = Field(default=False, description="Whether sample/hashtag barcode is present")
+    
+    # Confidence
+    confidence: float = Field(default=0.0, description="Confidence in structure detection (0-1)")
+    detection_notes: str | None = Field(default=None, description="Notes on how structure was detected")
+
+
 class ExperimentUnderstanding(BaseModel):
     """Complete understanding of an experiment extracted by the LLM."""
 
@@ -134,6 +172,17 @@ class ExperimentUnderstanding(BaseModel):
     )
     assay_structure: AssayStructure | None = Field(
         default=None, description="Detailed assay structure"
+    )
+    
+    # Read structure (barcode/UMI layout)
+    read_structure: ReadStructure | None = Field(
+        default=None, description="Detailed read structure with barcode/UMI segments"
+    )
+    
+    # Detected existing scripts/pipelines
+    detected_scripts: list[dict] = Field(
+        default_factory=list,
+        description="Previously existing scripts found in the directory with their purpose"
     )
     
     # Sample information

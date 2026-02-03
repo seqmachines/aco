@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
   X,
+  Code,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,6 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
+import { ReadStructureVisualizer } from "@/components/ReadStructureVisualizer"
 import type { ExperimentUnderstanding, QualityConcern, RecommendedCheck } from "@/types"
 
 interface UnderstandingEditorProps {
@@ -322,6 +324,45 @@ export function UnderstandingEditor({
           </CardContent>
         </Card>
       </div>
+
+      {/* Read Structure Visualization */}
+      {understanding.read_structure && (
+        <ReadStructureVisualizer readStructure={understanding.read_structure} />
+      )}
+
+      {/* Detected Scripts */}
+      {understanding.detected_scripts && understanding.detected_scripts.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Code className="h-4 w-4 text-accent" />
+              Detected Scripts ({understanding.detected_scripts.length})
+            </CardTitle>
+            <CardDescription>
+              Previously existing scripts found in the directory
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {understanding.detected_scripts.map((script, i) => (
+                <div key={i} className="p-3 rounded-lg border border-border bg-muted/20">
+                  <div className="flex items-center justify-between">
+                    <code className="text-sm font-mono">{script.filename || script.name}</code>
+                    {script.purpose && (
+                      <Badge variant="outline" className="text-xs">
+                        {script.purpose}
+                      </Badge>
+                    )}
+                  </div>
+                  {script.description && (
+                    <p className="text-sm text-muted-foreground mt-1">{script.description}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Quality Concerns */}
       {understanding.quality_concerns.length > 0 && (
