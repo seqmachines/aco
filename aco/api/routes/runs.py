@@ -84,11 +84,17 @@ def get_storage_dir() -> Path:
     return Path(os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco")))
 
 
+def get_runs_root_dir() -> Path:
+    """Get the directory where aco_runs should be located."""
+    return Path(os.getenv("ACO_WORKING_DIR", os.getcwd()))
+
+
 @router.get("/list", response_model=ListRunsResponse)
 async def list_runs():
     """List all analysis runs."""
-    storage_dir = get_storage_dir()
-    runs_dir = storage_dir / "aco_runs"
+    """List all analysis runs."""
+    runs_root_dir = get_runs_root_dir()
+    runs_dir = get_runs_root_dir() / "aco_runs"
     
     runs = []
     
@@ -96,7 +102,7 @@ async def list_runs():
         for run_path in runs_dir.iterdir():
             if run_path.is_dir():
                 manifest_id = run_path.name
-                run_manager = get_run_manager(storage_dir, manifest_id)
+                run_manager = get_run_manager(runs_root_dir, manifest_id)
                 
                 # Check which stages exist
                 stages = []
@@ -115,7 +121,7 @@ async def list_runs():
                 
                 # Get understanding info if available
                 understanding_store = get_understanding_store()
-                understanding = understanding_store.get(manifest_id)
+                understanding = understanding_store.load(manifest_id)
                 
                 run_info = RunInfo(
                     manifest_id=manifest_id,
@@ -125,7 +131,7 @@ async def list_runs():
                     has_notebook="notebook" in stages,
                     has_report="report" in stages,
                     experiment_name=understanding.summary.split(".")[0][:50] if understanding and understanding.summary else None,
-                    assay_type=understanding.assay_type if understanding else None,
+                    assay_type=understanding.assay_name if understanding else None,
                 )
                 
                 # Get timestamps from run directory
@@ -137,18 +143,18 @@ async def list_runs():
     
     # Also check manifest store for runs without aco_runs folder
     manifest_store = get_manifest_store()
-    for manifest_id in manifest_store.list_ids():
+    for manifest_id in manifest_store.list_all():
         if not any(r.manifest_id == manifest_id for r in runs):
-            manifest = manifest_store.get(manifest_id)
+            manifest = manifest_store.load(manifest_id)
             understanding_store = get_understanding_store()
-            understanding = understanding_store.get(manifest_id)
+            understanding = understanding_store.load(manifest_id)
             
             run_info = RunInfo(
                 manifest_id=manifest_id,
                 stages_completed=["manifest"] + (["understanding"] if understanding else []),
                 has_understanding=understanding is not None,
                 experiment_name=understanding.summary.split(".")[0][:50] if understanding and understanding.summary else None,
-                assay_type=understanding.assay_type if understanding else None,
+                assay_type=understanding.assay_name if understanding else None,
             )
             runs.append(run_info)
     
@@ -161,8 +167,8 @@ async def list_runs():
 @router.get("/{manifest_id}", response_model=RunInfo)
 async def get_run(manifest_id: str):
     """Get information about a specific run."""
-    storage_dir = get_storage_dir()
-    run_manager = get_run_manager(storage_dir, manifest_id)
+    runs_root_dir = get_runs_root_dir()
+    run_manager = get_run_manager(runs_root_dir, manifest_id)
     
     # Check which stages exist
     stages = []
@@ -181,7 +187,7 @@ async def get_run(manifest_id: str):
     
     # Get understanding info
     understanding_store = get_understanding_store()
-    understanding = understanding_store.get(manifest_id)
+    understanding = understanding_store.load(manifest_id)
     
     run_info = RunInfo(
         manifest_id=manifest_id,
@@ -191,10 +197,10 @@ async def get_run(manifest_id: str):
         has_notebook="notebook" in stages,
         has_report="report" in stages,
         experiment_name=understanding.summary.split(".")[0][:50] if understanding and understanding.summary else None,
-        assay_type=understanding.assay_type if understanding else None,
+        assay_type=understanding.assay_name if understanding else None,
     )
     
-    run_path = storage_dir / "aco_runs" / manifest_id
+    run_path = runs_root_dir / "aco_runs" / manifest_id
     if run_path.exists():
         stat = run_path.stat()
         run_info.created_at = datetime.fromtimestamp(stat.st_ctime)
@@ -208,8 +214,11 @@ async def delete_run(manifest_id: str):
     """Delete a run and all its data."""
     import shutil
     
-    storage_dir = get_storage_dir()
-    run_path = storage_dir / "aco_runs" / manifest_id
+    """Delete a run and all its data."""
+    import shutil
+    
+    runs_root_dir = get_runs_root_dir()
+    run_path = runs_root_dir / "aco_runs" / manifest_id
     
     deleted = []
     
@@ -221,11 +230,11 @@ async def delete_run(manifest_id: str):
     manifest_store = get_manifest_store()
     understanding_store = get_understanding_store()
     
-    if manifest_store.get(manifest_id):
+    if manifest_store.load(manifest_id):
         manifest_store.delete(manifest_id)
         deleted.append("manifest")
     
-    if understanding_store.get(manifest_id):
+    if understanding_store.load(manifest_id):
         understanding_store.delete(manifest_id)
         deleted.append("understanding")
     
@@ -249,14 +258,14 @@ async def compare_runs(manifest_ids: list[str]):
     
     # Gather understanding metrics
     for manifest_id in manifest_ids:
-        understanding = understanding_store.get(manifest_id)
+        understanding = understanding_store.load(manifest_id)
         if understanding:
             metrics.append({
                 "manifest_id": manifest_id,
-                "assay_type": understanding.assay_type,
-                "species": understanding.species,
+                "assay_type": understanding.assay_name,
+                "species": understanding.key_parameters.get("Species") or understanding.key_parameters.get("Organism") or "Unknown",
                 "sample_count": understanding.sample_count,
-                "read_count": understanding.read_count,
+                "read_count": understanding.read_structure.total_reads if understanding.read_structure else "Unknown",
             })
     
     return RunComparisonResponse(

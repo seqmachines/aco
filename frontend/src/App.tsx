@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { Dna, Github, Settings as SettingsIcon, Moon, Sun, Check, Circle, Loader2, PanelLeftClose, PanelLeft } from "lucide-react"
 import { IntakeForm } from "@/components/IntakeForm"
 import { FileScanner } from "@/components/FileScanner"
@@ -60,6 +60,48 @@ function App() {
 
   // Get the default directory from config (where aco was started)
   const defaultDirectory = config?.working_dir || ""
+
+  // Load latest run on startup
+  useEffect(() => {
+    const loadLatestRun = async () => {
+      try {
+        const res = await fetch("/manifest/latest")
+        if (res.ok) {
+          const data = await res.json()
+          if (data.manifest) {
+            setManifest(data.manifest)
+
+            // Check for understanding
+            const understandingRes = await fetch(`/understanding/${data.manifest.id}`)
+            if (understandingRes.ok) {
+              const uData = await understandingRes.json()
+              setUnderstanding(uData.understanding)
+              // If we have understanding, check runs to see how far we got
+              const runRes = await fetch(`/runs/${data.manifest.id}`)
+              if (runRes.ok) {
+                const runData = await runRes.json()
+                // Determine step based on completed stages
+                const stages = runData.stages_completed
+                if (stages.includes("report")) setCurrentStep("report")
+                else if (stages.includes("notebook")) setCurrentStep("notebook")
+                else if (stages.includes("scripts")) setCurrentStep("scripts")
+                else if (stages.includes("understanding")) setCurrentStep("understanding")
+                else setCurrentStep("manifest")
+              } else {
+                setCurrentStep("understanding")
+              }
+            } else {
+              setCurrentStep("manifest")
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load latest run:", e)
+      }
+    }
+
+    loadLatestRun()
+  }, [])
 
   const handleIntakeSubmit = useCallback(
     async (data: IntakeFormData) => {

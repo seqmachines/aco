@@ -457,11 +457,19 @@ export function UnderstandingEditor({
               </Button>
               <Button
                 onClick={handleApprove}
-                disabled={understanding.is_approved}
                 className="glow-accent"
               >
-                <Check className="h-4 w-4 mr-2" />
-                {understanding.is_approved ? "Approved" : "Approve"}
+                {understanding.is_approved ? (
+                  <>
+                    <ChevronRight className="h-4 w-4 mr-2" />
+                    Proceed to Scripts
+                  </>
+                ) : (
+                  <>
+                    <Check className="h-4 w-4 mr-2" />
+                    Approve
+                  </>
+                )}
               </Button>
             </>
           )}

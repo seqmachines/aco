@@ -1,5 +1,6 @@
 """Script generation and execution routes."""
 
+import json
 import os
 from pathlib import Path
 
@@ -22,6 +23,12 @@ from aco.engine.executor import (
     check_dependencies,
 )
 from aco.engine.runs import get_run_manager
+from aco.engine.environment import (
+    create_venv,
+    install_dependencies,
+    get_environment_status,
+    get_script_interpreter,
+)
 from aco.engine import UnderstandingStore
 from aco.manifest import ManifestStore
 
@@ -101,6 +108,48 @@ class DependencyCheckResponse(BaseModel):
     all_available: bool
 
 
+class CreateEnvRequest(BaseModel):
+    """Request to create an execution environment."""
+    
+    manifest_id: str
+
+
+class CreateEnvResponse(BaseModel):
+    """Response with environment creation result."""
+    
+    manifest_id: str
+    success: bool
+    venv_path: str | None
+    message: str
+
+
+class InstallDepsRequest(BaseModel):
+    """Request to install dependencies."""
+    
+    manifest_id: str
+    additional_packages: list[str] = Field(default_factory=list)
+
+
+class InstallDepsResponse(BaseModel):
+    """Response with installation result."""
+    
+    manifest_id: str
+    success: bool
+    installed: list[str]
+    output: str
+    error: str | None = None
+
+
+class EnvStatusResponse(BaseModel):
+    """Response with environment status."""
+    
+    manifest_id: str
+    exists: bool
+    venv_path: str | None
+    python_executable: str | None
+    installed_packages: list[str]
+
+
 # Store instances
 _manifest_store: ManifestStore | None = None
 _understanding_store: UnderstandingStore | None = None
@@ -126,6 +175,75 @@ def get_understanding_store() -> UnderstandingStore:
     return _understanding_store
 
 
+def get_scripts_dir(manifest_id: str) -> Path:
+    """Get the scripts directory for a manifest."""
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    scripts_dir = Path(working_dir) / "aco_runs" / manifest_id / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    return scripts_dir
+
+
+def save_plan_to_disk(manifest_id: str, plan: ScriptPlan) -> Path:
+    """Save script plan to disk."""
+    scripts_dir = get_scripts_dir(manifest_id)
+    plan_path = scripts_dir / "plan.json"
+    with open(plan_path, "w") as f:
+        f.write(plan.model_dump_json(indent=2))
+    return plan_path
+
+
+def load_plan_from_disk(manifest_id: str) -> ScriptPlan | None:
+    """Load script plan from disk if it exists."""
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    plan_path = Path(working_dir) / "aco_runs" / manifest_id / "scripts" / "plan.json"
+    if plan_path.exists():
+        with open(plan_path) as f:
+            data = json.load(f)
+        return ScriptPlan.model_validate(data)
+    return None
+
+
+def save_script_to_disk(manifest_id: str, script: GeneratedScript) -> Path:
+    """Save a generated script to disk."""
+    scripts_dir = get_scripts_dir(manifest_id)
+    # Determine extension based on script type
+    ext = {
+        ScriptType.PYTHON: ".py",
+        ScriptType.R: ".R",
+        ScriptType.BASH: ".sh",
+    }.get(script.script_type, ".py")
+    
+    # Remove existing extension from script name if present
+    script_name = script.name
+    for existing_ext in [".py", ".R", ".sh", ".r"]:
+        if script_name.endswith(existing_ext):
+            script_name = script_name[:-len(existing_ext)]
+            break
+    
+    script_path = scripts_dir / f"{script_name}{ext}"
+    with open(script_path, "w") as f:
+        f.write(script.code or "")
+    return script_path
+
+
+def save_requirements_txt(manifest_id: str, plan: ScriptPlan) -> Path:
+    """Generate and save requirements.txt from all script dependencies."""
+    scripts_dir = get_scripts_dir(manifest_id)
+    all_deps = set()
+    for script in plan.scripts:
+        if script.script_type == ScriptType.PYTHON:
+            for dep in script.dependencies:
+                # Skip standard library modules
+                if dep.lower() not in ["os", "sys", "json", "re", "logging", "pathlib", "collections", "gzip"]:
+                    all_deps.add(dep.lower())
+    
+    req_path = scripts_dir / "requirements.txt"
+    with open(req_path, "w") as f:
+        for dep in sorted(all_deps):
+            f.write(f"{dep}\n")
+    return req_path
+
+
 @router.post("/plan", response_model=GeneratePlanResponse)
 async def generate_plan_endpoint(request: GeneratePlanRequest):
     """Generate a script plan based on experiment understanding."""
@@ -133,12 +251,12 @@ async def generate_plan_endpoint(request: GeneratePlanRequest):
     understanding_store = get_understanding_store()
     
     # Get manifest
-    manifest = manifest_store.get(request.manifest_id)
+    manifest = manifest_store.load(request.manifest_id)
     if not manifest:
         raise HTTPException(404, f"Manifest {request.manifest_id} not found")
     
     # Get understanding
-    understanding = understanding_store.get(request.manifest_id)
+    understanding = understanding_store.load(request.manifest_id)
     if not understanding:
         raise HTTPException(400, "Understanding not generated yet")
     
@@ -156,13 +274,19 @@ async def generate_plan_endpoint(request: GeneratePlanRequest):
         plan = await generate_script_plan(understanding, file_list, client)
         plan.manifest_id = request.manifest_id
         
-        # Cache the plan
+        # Cache the plan in memory
         _script_plans[request.manifest_id] = plan
+        
+        # Save plan to disk
+        plan_path = save_plan_to_disk(request.manifest_id, plan)
+        
+        # Generate requirements.txt
+        save_requirements_txt(request.manifest_id, plan)
         
         return GeneratePlanResponse(
             manifest_id=request.manifest_id,
             plan=plan,
-            message=f"Generated plan with {len(plan.scripts)} scripts",
+            message=f"Generated plan with {len(plan.scripts)} scripts. Saved to {plan_path}",
         )
     except Exception as e:
         raise HTTPException(500, f"Failed to generate plan: {str(e)}")
@@ -171,15 +295,27 @@ async def generate_plan_endpoint(request: GeneratePlanRequest):
 @router.get("/plan/{manifest_id}", response_model=GeneratePlanResponse)
 async def get_plan_endpoint(manifest_id: str):
     """Get the current script plan for a manifest."""
-    if manifest_id not in _script_plans:
-        raise HTTPException(404, "No script plan found. Generate one first.")
+    # Try memory cache first
+    if manifest_id in _script_plans:
+        plan = _script_plans[manifest_id]
+        return GeneratePlanResponse(
+            manifest_id=manifest_id,
+            plan=plan,
+            message="Retrieved from cache",
+        )
     
-    plan = _script_plans[manifest_id]
-    return GeneratePlanResponse(
-        manifest_id=manifest_id,
-        plan=plan,
-        message="Retrieved existing plan",
-    )
+    # Try loading from disk
+    plan = load_plan_from_disk(manifest_id)
+    if plan:
+        # Cache it for future requests
+        _script_plans[manifest_id] = plan
+        return GeneratePlanResponse(
+            manifest_id=manifest_id,
+            plan=plan,
+            message="Loaded from disk",
+        )
+    
+    raise HTTPException(404, "No script plan found. Generate one first.")
 
 
 @router.post("/generate-code", response_model=GenerateCodeResponse)
@@ -197,13 +333,13 @@ async def generate_code_endpoint(request: GenerateCodeRequest):
     
     # Get understanding for context
     understanding_store = get_understanding_store()
-    understanding = understanding_store.get(request.manifest_id)
+    understanding = understanding_store.load(request.manifest_id)
     if not understanding:
         raise HTTPException(400, "Understanding not found")
     
     # Get output directory from run manager
-    storage_dir = os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco"))
-    run_manager = get_run_manager(Path(storage_dir), request.manifest_id)
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    run_manager = get_run_manager(Path(working_dir), request.manifest_id)
     output_dir = run_manager.stage_path(f"02_{script.category.value}")
     
     # Create Gemini client
@@ -217,10 +353,11 @@ async def generate_code_endpoint(request: GenerateCodeRequest):
         # Update script with generated code
         script.code = code
         
-        # Save to disk
-        executor = ScriptExecutor()
-        scripts_dir = run_manager.stage_path(script.category.value)
-        script_path = executor.save_script(script, scripts_dir)
+        # Save script to scripts folder
+        script_path = save_script_to_disk(request.manifest_id, script)
+        
+        # Update plan on disk with new code
+        save_plan_to_disk(request.manifest_id, plan)
         
         return GenerateCodeResponse(
             manifest_id=request.manifest_id,
@@ -230,6 +367,82 @@ async def generate_code_endpoint(request: GenerateCodeRequest):
         )
     except Exception as e:
         raise HTTPException(500, f"Failed to generate code: {str(e)}")
+
+
+class GenerateAllCodeRequest(BaseModel):
+    """Request to generate code for all scripts."""
+    
+    manifest_id: str
+    model: str | None = None
+    api_key: str | None = None
+
+
+class GenerateAllCodeResponse(BaseModel):
+    """Response with all generated code."""
+    
+    manifest_id: str
+    generated: list[str]
+    failed: list[str]
+    scripts_dir: str
+
+
+@router.post("/generate-all-code", response_model=GenerateAllCodeResponse)
+async def generate_all_code_endpoint(request: GenerateAllCodeRequest):
+    """Generate code for all scripts in the plan."""
+    if request.manifest_id not in _script_plans:
+        # Try loading from disk
+        plan = load_plan_from_disk(request.manifest_id)
+        if plan:
+            _script_plans[request.manifest_id] = plan
+        else:
+            raise HTTPException(404, "No script plan found. Generate one first.")
+    
+    plan = _script_plans[request.manifest_id]
+    
+    # Get understanding for context
+    understanding_store = get_understanding_store()
+    understanding = understanding_store.load(request.manifest_id)
+    if not understanding:
+        raise HTTPException(400, "Understanding not found")
+    
+    # Get output directory
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    run_manager = get_run_manager(Path(working_dir), request.manifest_id)
+    
+    # Create Gemini client
+    api_key = request.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    model = request.model or "gemini-2.5-flash"
+    client = GeminiClient(api_key=api_key, model_name=model)
+    
+    generated = []
+    failed = []
+    
+    for i, script in enumerate(plan.scripts):
+        try:
+            output_dir = run_manager.stage_path(f"02_{script.category.value}")
+            code = await generate_script_code(script, understanding, str(output_dir), client)
+            
+            # Update script with generated code
+            script.code = code
+            
+            # Save script to scripts folder
+            save_script_to_disk(request.manifest_id, script)
+            
+            generated.append(script.name)
+        except Exception as e:
+            failed.append(f"{script.name}: {str(e)}")
+    
+    # Update plan on disk with all generated code
+    save_plan_to_disk(request.manifest_id, plan)
+    
+    scripts_dir = get_scripts_dir(request.manifest_id)
+    
+    return GenerateAllCodeResponse(
+        manifest_id=request.manifest_id,
+        generated=generated,
+        failed=failed,
+        scripts_dir=str(scripts_dir),
+    )
 
 
 @router.post("/execute", response_model=ExecuteScriptResponse)
@@ -249,9 +462,9 @@ async def execute_script_endpoint(request: ExecuteScriptRequest):
         raise HTTPException(400, "Script code not generated yet")
     
     # Get paths
-    storage_dir = os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco"))
-    run_manager = get_run_manager(Path(storage_dir), request.manifest_id)
-    scripts_dir = run_manager.stage_path(script.category.value)
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    run_manager = get_run_manager(Path(working_dir), request.manifest_id)
+    scripts_dir = get_scripts_dir(request.manifest_id)  # Use scripts/ folder
     output_dir = run_manager.stage_path(f"04_qc_results")
     
     # Execute
@@ -260,10 +473,18 @@ async def execute_script_endpoint(request: ExecuteScriptRequest):
     
     from aco.engine.scripts import get_script_extension
     ext = get_script_extension(script.script_type)
-    script_path = scripts_dir / f"{script.name}{ext}"
+    
+    # Handle script name (remove existing extension if present)
+    script_name = script.name
+    for existing_ext in [".py", ".R", ".sh", ".r"]:
+        if script_name.endswith(existing_ext):
+            script_name = script_name[:-len(existing_ext)]
+            break
+    
+    script_path = scripts_dir / f"{script_name}{ext}"
     
     if not script_path.exists():
-        raise HTTPException(400, "Script file not found. Generate code first.")
+        raise HTTPException(400, f"Script file not found at {script_path}. Generate code first.")
     
     result = await executor.execute_script(script, script_path, output_dir)
     
@@ -294,21 +515,30 @@ async def execute_all_endpoint(request: ExecuteAllRequest):
         raise HTTPException(400, "No scripts have generated code yet")
     
     # Get paths
-    storage_dir = os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco"))
-    run_manager = get_run_manager(Path(storage_dir), request.manifest_id)
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    run_manager = get_run_manager(Path(working_dir), request.manifest_id)
+    scripts_dir = get_scripts_dir(request.manifest_id)  # Use scripts/ folder
     
     # Execute each script
     config = ExecutionConfig(timeout_seconds=request.timeout_seconds)
     executor = ScriptExecutor(config)
     
     results = []
+    from aco.engine.scripts import get_script_extension
+    
     for script in scripts_to_run:
-        scripts_dir = run_manager.stage_path(script.category.value)
         output_dir = run_manager.stage_path("04_qc_results")
         
-        from aco.engine.scripts import get_script_extension
         ext = get_script_extension(script.script_type)
-        script_path = scripts_dir / f"{script.name}{ext}"
+        
+        # Handle script name (remove existing extension if present)
+        script_name = script.name
+        for existing_ext in [".py", ".R", ".sh", ".r"]:
+            if script_name.endswith(existing_ext):
+                script_name = script_name[:-len(existing_ext)]
+                break
+        
+        script_path = scripts_dir / f"{script_name}{ext}"
         
         if script_path.exists():
             result = await executor.execute_script(script, script_path, output_dir)
@@ -317,7 +547,7 @@ async def execute_all_endpoint(request: ExecuteAllRequest):
             # Save result
             run_manager.save_artifact(
                 "04_qc_results",
-                f"{script.name}_result.json",
+                f"{script_name}_result.json",
                 result,
             )
     
@@ -350,4 +580,55 @@ async def check_dependencies_endpoint(manifest_id: str):
         manifest_id=manifest_id,
         dependencies=deps_status,
         all_available=all(deps_status.values()),
+    )
+
+
+@router.post("/create-env", response_model=CreateEnvResponse)
+async def create_env_endpoint(request: CreateEnvRequest):
+    """Create a virtual environment for script execution."""
+    success, message = create_venv(request.manifest_id)
+    
+    status = get_environment_status(request.manifest_id)
+    
+    return CreateEnvResponse(
+        manifest_id=request.manifest_id,
+        success=success,
+        venv_path=status.venv_path,
+        message=message,
+    )
+
+
+@router.post("/install-deps", response_model=InstallDepsResponse)
+async def install_deps_endpoint(request: InstallDepsRequest):
+    """Install dependencies into the virtual environment."""
+    # Get requirements.txt path
+    scripts_dir = get_scripts_dir(request.manifest_id)
+    requirements_path = scripts_dir / "requirements.txt"
+    
+    result = install_dependencies(
+        request.manifest_id,
+        requirements_file=requirements_path if requirements_path.exists() else None,
+        packages=request.additional_packages if request.additional_packages else None,
+    )
+    
+    return InstallDepsResponse(
+        manifest_id=request.manifest_id,
+        success=result.success,
+        installed=result.installed,
+        output=result.output,
+        error=result.error,
+    )
+
+
+@router.get("/env-status/{manifest_id}", response_model=EnvStatusResponse)
+async def env_status_endpoint(manifest_id: str):
+    """Get the status of the execution environment."""
+    status = get_environment_status(manifest_id)
+    
+    return EnvStatusResponse(
+        manifest_id=manifest_id,
+        exists=status.exists,
+        venv_path=status.venv_path,
+        python_executable=status.python_executable,
+        installed_packages=status.installed_packages,
     )

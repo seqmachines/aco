@@ -95,7 +95,7 @@ async def generate_notebook_endpoint(request: GenerateNotebookRequest):
     understanding_store = get_understanding_store()
     
     # Get understanding
-    understanding = understanding_store.get(request.manifest_id)
+    understanding = understanding_store.load(request.manifest_id)
     if not understanding:
         raise HTTPException(400, "Understanding not generated yet")
     
@@ -109,8 +109,8 @@ async def generate_notebook_endpoint(request: GenerateNotebookRequest):
     script_results = _script_results.get(request.manifest_id, [])
     
     # Get output directory
-    storage_dir = os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco"))
-    run_manager = get_run_manager(Path(storage_dir), request.manifest_id)
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    run_manager = get_run_manager(Path(working_dir), request.manifest_id)
     output_dir = run_manager.stage_path("05_notebook")
     
     # Create Gemini client
@@ -178,8 +178,8 @@ async def get_notebook_endpoint(manifest_id: str, format: str | None = None):
 @router.get("/list/{manifest_id}", response_model=ListNotebooksResponse)
 async def list_notebooks_endpoint(manifest_id: str):
     """List all notebooks for a manifest."""
-    storage_dir = os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco"))
-    run_manager = get_run_manager(Path(storage_dir), manifest_id)
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    run_manager = get_run_manager(Path(working_dir), manifest_id)
     notebook_dir = run_manager.stage_path("05_notebook")
     
     notebooks = []

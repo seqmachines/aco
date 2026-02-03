@@ -94,7 +94,7 @@ async def generate_report_endpoint(request: GenerateReportRequest):
     understanding_store = get_understanding_store()
     
     # Get understanding
-    understanding = understanding_store.get(request.manifest_id)
+    understanding = understanding_store.load(request.manifest_id)
     if not understanding:
         raise HTTPException(400, "Understanding not generated yet")
     
@@ -109,8 +109,8 @@ async def generate_report_endpoint(request: GenerateReportRequest):
     notebook = _notebooks.get(request.manifest_id)
     
     # Get output directory
-    storage_dir = os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco"))
-    run_manager = get_run_manager(Path(storage_dir), request.manifest_id)
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    run_manager = get_run_manager(Path(working_dir), request.manifest_id)
     output_dir = run_manager.stage_path("06_report")
     
     # Create Gemini client
@@ -170,8 +170,8 @@ async def get_report_html_endpoint(manifest_id: str):
     
     if not report:
         # Try to load from disk
-        storage_dir = os.getenv("ACO_STORAGE_DIR", os.path.expanduser("~/.aco"))
-        run_manager = get_run_manager(Path(storage_dir), manifest_id)
+        working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+        run_manager = get_run_manager(Path(working_dir), manifest_id)
         report_path = run_manager.stage_path("06_report") / "qc_report.html"
         
         if report_path.exists():

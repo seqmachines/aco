@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
     Play,
     CheckCircle,
@@ -10,6 +10,8 @@ import {
     Loader2,
     RefreshCw,
     Wand2,
+    Box,
+    Download,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -255,6 +257,51 @@ export function ScriptRunner({ manifestId, onComplete }: ScriptRunnerProps) {
     const [results, setResults] = useState<Record<string, ExecutionResult>>({})
     const [error, setError] = useState<string | null>(null)
 
+    // Environment state
+    const [envExists, setEnvExists] = useState(false)
+    const [isCreatingEnv, setIsCreatingEnv] = useState(false)
+    const [isInstallingDeps, setIsInstallingDeps] = useState(false)
+    const [isGeneratingAllCode, setIsGeneratingAllCode] = useState(false)
+    const [envMessage, setEnvMessage] = useState<string | null>(null)
+
+    // Check environment status on mount
+    useEffect(() => {
+        checkEnvStatus()
+    }, [manifestId])
+
+    const checkEnvStatus = async () => {
+        try {
+            const response = await fetch(`/scripts/env-status/${manifestId}`)
+            if (response.ok) {
+                const data = await response.json()
+                setEnvExists(data.exists)
+            }
+        } catch (_e) {
+            // Ignore errors
+        }
+    }
+
+    // Load existing plan from disk on mount
+    const loadExistingPlan = async () => {
+        try {
+            const response = await fetch(`/scripts/plan/${manifestId}`)
+            if (response.ok) {
+                const data = await response.json()
+                if (data.plan) {
+                    setPlan(data.plan)
+                    console.log("Loaded existing plan from disk:", data.message)
+                }
+            }
+        } catch (_e) {
+            // No existing plan, that's fine
+        }
+    }
+
+    // Load existing plan when component mounts
+    useEffect(() => {
+        loadExistingPlan()
+    }, [manifestId])
+
     const generatePlan = async () => {
         setIsGeneratingPlan(true)
         setError(null)
@@ -361,6 +408,95 @@ export function ScriptRunner({ manifestId, onComplete }: ScriptRunnerProps) {
         }
     }
 
+    const createEnv = async () => {
+        setIsCreatingEnv(true)
+        setEnvMessage(null)
+        setError(null)
+        try {
+            const response = await fetch("/scripts/create-env", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ manifest_id: manifestId }),
+            })
+            const data = await response.json()
+            if (data.success) {
+                setEnvExists(true)
+                setEnvMessage(data.message)
+            } else {
+                throw new Error(data.message)
+            }
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "Failed to create environment")
+        } finally {
+            setIsCreatingEnv(false)
+        }
+    }
+
+    const installDeps = async () => {
+        setIsInstallingDeps(true)
+        setEnvMessage(null)
+        setError(null)
+        try {
+            const response = await fetch("/scripts/install-deps", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ manifest_id: manifestId }),
+            })
+            const data = await response.json()
+            if (data.success) {
+                setEnvMessage(`Installed: ${data.installed.join(", ") || "all dependencies"}`)
+            } else {
+                throw new Error(data.error || "Installation failed")
+            }
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "Failed to install dependencies")
+        } finally {
+            setIsInstallingDeps(false)
+        }
+    }
+
+    const generateAllCode = async () => {
+        console.log("generateAllCode called, plan:", plan, "manifestId:", manifestId)
+        if (!plan) {
+            console.log("No plan, returning early")
+            return
+        }
+        setIsGeneratingAllCode(true)
+        setError(null)
+        console.log("Starting generateAllCode request...")
+        try {
+            const response = await fetch("/scripts/generate-all-code", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ manifest_id: manifestId }),
+            })
+            console.log("Response status:", response.status)
+            if (!response.ok) {
+                const data = await response.json()
+                console.log("Error response:", data)
+                throw new Error(data.detail || "Failed to generate code")
+            }
+            const data = await response.json()
+            console.log("Success response:", data)
+            // Reload the plan to get updated code
+            const planResponse = await fetch(`/scripts/plan/${manifestId}`)
+            if (planResponse.ok) {
+                const planData = await planResponse.json()
+                setPlan(planData.plan)
+                console.log("Plan updated with code")
+            }
+            if (data.failed.length > 0) {
+                setError(`Some scripts failed: ${data.failed.join(", ")}`)
+            }
+        } catch (e) {
+            console.error("generateAllCode error:", e)
+            setError(e instanceof Error ? e.message : "Unknown error")
+        } finally {
+            setIsGeneratingAllCode(false)
+            console.log("generateAllCode finished")
+        }
+    }
+
     if (!plan) {
         return (
             <Card>
@@ -398,6 +534,20 @@ export function ScriptRunner({ manifestId, onComplete }: ScriptRunnerProps) {
 
     return (
         <div className="space-y-4">
+            {/* Error display */}
+            {error && (
+                <div className="p-3 bg-destructive/10 text-destructive rounded text-sm">
+                    {error}
+                </div>
+            )}
+
+            {/* Environment message */}
+            {envMessage && (
+                <div className="p-3 bg-green-500/10 text-green-600 rounded text-sm">
+                    {envMessage}
+                </div>
+            )}
+
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div>
@@ -410,6 +560,58 @@ export function ScriptRunner({ manifestId, onComplete }: ScriptRunnerProps) {
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
+                    {/* Generate All Code button */}
+                    {!allHaveCode && (
+                        <Button
+                            onClick={generateAllCode}
+                            disabled={isGeneratingAllCode}
+                            size="sm"
+                            variant="outline"
+                        >
+                            {isGeneratingAllCode ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                                <Wand2 className="h-3 w-3 mr-1" />
+                            )}
+                            Generate All Code
+                        </Button>
+                    )}
+
+                    {/* Create Environment button */}
+                    {allHaveCode && !envExists && (
+                        <Button
+                            onClick={createEnv}
+                            disabled={isCreatingEnv}
+                            size="sm"
+                            variant="outline"
+                        >
+                            {isCreatingEnv ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                                <Box className="h-3 w-3 mr-1" />
+                            )}
+                            Create Environment
+                        </Button>
+                    )}
+
+                    {/* Install Dependencies button */}
+                    {allHaveCode && envExists && (
+                        <Button
+                            onClick={installDeps}
+                            disabled={isInstallingDeps}
+                            size="sm"
+                            variant="outline"
+                        >
+                            {isInstallingDeps ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                                <Download className="h-3 w-3 mr-1" />
+                            )}
+                            Install Dependencies
+                        </Button>
+                    )}
+
+                    {/* Execute All button */}
                     {allHaveCode && !allExecuted && (
                         <Button onClick={executeAll} size="sm">
                             <Play className="h-3 w-3 mr-1" />

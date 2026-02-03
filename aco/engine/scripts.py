@@ -39,7 +39,7 @@ class GeneratedScript(BaseModel):
     category: ScriptCategory = Field(..., description="Script category")
     script_type: ScriptType = Field(..., description="Script language")
     description: str = Field(..., description="What the script does")
-    code: str = Field(..., description="The script code")
+    code: str = Field(default="", description="The script code (leave empty for plan)")
     dependencies: list[str] = Field(
         default_factory=list, description="Required packages/tools"
     )
@@ -57,8 +57,47 @@ class GeneratedScript(BaseModel):
     )
 
 
+class PlannedScript(BaseModel):
+    """A script planned by the LLM (without code)."""
+    
+    name: str = Field(..., description="Script filename")
+    category: ScriptCategory = Field(..., description="Script category")
+    script_type: ScriptType = Field(..., description="Script language")
+    description: str = Field(..., description="What the script does")
+    dependencies: list[str] = Field(
+        default_factory=list, description="Required packages/tools"
+    )
+    input_patterns: list[str] = Field(
+        default_factory=list, description="Input file patterns (use globs like *.fastq.gz, not full paths)"
+    )
+    output_files: list[str] = Field(
+        default_factory=list, description="Files the script will create (just filenames)"
+    )
+    estimated_runtime: str | None = Field(
+        default=None, description="Estimated runtime"
+    )
+    requires_approval: bool = Field(
+        default=True, description="Whether user approval is needed before running"
+    )
+
+
+class ScriptPlanSchema(BaseModel):
+    """Schema for generating script plans (uses PlannedScript)."""
+    
+    manifest_id: str = Field(..., description="Associated manifest ID")
+    scripts: list[PlannedScript] = Field(
+        default_factory=list, description="Scripts to generate"
+    )
+    execution_order: list[str] = Field(
+        default_factory=list, description="Order to run scripts (by name)"
+    )
+    total_estimated_runtime: str | None = Field(
+        default=None, description="Total estimated runtime"
+    )
+
+
 class ScriptPlan(BaseModel):
-    """A plan for scripts to generate and execute."""
+    """A plan for scripts to generate and execute (includes code field)."""
     
     manifest_id: str = Field(..., description="Associated manifest ID")
     scripts: list[GeneratedScript] = Field(
@@ -72,6 +111,12 @@ class ScriptPlan(BaseModel):
     )
     generated_at: datetime = Field(default_factory=datetime.now)
     is_approved: bool = Field(default=False)
+
+
+# Check dependency availability
+def check_dependencies(dependencies: list[str]) -> dict[str, bool]:
+    import shutil
+    return {dep: shutil.which(dep) is not None for dep in dependencies}
 
 
 class ExecutionResult(BaseModel):
@@ -131,7 +176,7 @@ SCRIPT_PLAN_PROMPT = """Based on the following experiment understanding, generat
 
 {understanding_json}
 
-# Available Files
+# Available Files (sample)
 
 {file_list}
 
@@ -145,12 +190,14 @@ Generate a list of scripts that will:
 For each script, specify:
 - Name, category, and script type (prefer Python)
 - Clear description of purpose
-- Required dependencies
-- Input and output files
+- Required dependencies (package names only)
+- Input patterns using GLOB SYNTAX (e.g. "gex_fastq/*_R1_*.fastq.gz", NOT full paths)
+- Output files (just filenames, not full paths)
 - Execution order
 
+**CRITICAL**: Keep input_patterns SHORT using glob patterns. Do NOT list individual files.
 Focus on scripts that can actually be run with the available files.
-Prioritize essential QC checks over nice-to-haves.
+Prioritize essential QC checks over nice-to-haves. Limit to 3-5 scripts maximum.
 """
 
 
@@ -189,6 +236,10 @@ Generate a complete, runnable script that:
 
 Include comprehensive error handling and logging.
 The script should be self-contained and ready to run.
+
+IMPORTANT: Output ONLY the script code. Do not include any explanatory text before or after the code.
+Start directly with the shebang (#!/usr/bin/env python3) or imports.
+Do not use markdown code blocks - just output the raw script.
 """
 
 
@@ -210,23 +261,63 @@ async def generate_script_plan(
     if client is None:
         client = get_gemini_client()
     
-    # Build the prompt
+    # Build the prompt - summarize files by directory instead of listing all
     understanding_json = understanding.model_dump_json(indent=2)
-    file_list_str = "\n".join(f"- {f}" for f in file_list[:50])  # Limit files
+    
+    # Summarize files by directory to keep response small
+    from collections import defaultdict
+    from pathlib import Path as PPath
+    dir_summary = defaultdict(list)
+    for f in file_list:
+        p = PPath(f)
+        dir_summary[str(p.parent)].append(p.name)
+    
+    file_summary_lines = []
+    for dir_path, files in list(dir_summary.items())[:5]:  # Max 5 directories
+        file_summary_lines.append(f"Directory: {dir_path}")
+        # Show only 3 example files per directory
+        for fname in files[:3]:
+            file_summary_lines.append(f"  - {fname}")
+        if len(files) > 3:
+            file_summary_lines.append(f"  - ... and {len(files) - 3} more files")
+    
+    file_list_str = "\n".join(file_summary_lines)
     
     prompt = SCRIPT_PLAN_PROMPT.format(
         understanding_json=understanding_json,
         file_list=file_list_str,
     )
     
-    plan = await client.generate_structured_async(
+    # Use ScriptPlanSchema which explicitly excludes code field from scripts
+    plan_schema = await client.generate_structured_async(
         prompt=prompt,
-        response_schema=ScriptPlan,
+        response_schema=ScriptPlanSchema,
         system_instruction=SCRIPT_GENERATION_SYSTEM,
         temperature=0.3,
     )
     
-    return plan
+    # Convert to full ScriptPlan (adding empty code fields)
+    full_scripts = []
+    for s in plan_schema.scripts:
+        full_scripts.append(GeneratedScript(
+            name=s.name,
+            category=s.category,
+            script_type=s.script_type,
+            description=s.description,
+            code="",  # Explicitly empty
+            dependencies=s.dependencies,
+            input_files=s.input_patterns,  # Map patterns to input_files
+            output_files=s.output_files,
+            estimated_runtime=s.estimated_runtime,
+            requires_approval=s.requires_approval
+        ))
+        
+    return ScriptPlan(
+        manifest_id=plan_schema.manifest_id,
+        scripts=full_scripts,
+        execution_order=plan_schema.execution_order,
+        total_estimated_runtime=plan_schema.total_estimated_runtime
+    )
 
 
 async def generate_script_code(
@@ -261,19 +352,140 @@ async def generate_script_code(
         dependencies=", ".join(script.dependencies),
     )
     
-    # For code generation, we want raw text output
+    # For code generation, we want raw text output with higher token limit
     response = await client.generate_async(
         prompt=prompt,
         system_instruction=SCRIPT_GENERATION_SYSTEM,
         temperature=0.2,  # Lower temp for code
+        max_output_tokens=16384,  # Higher limit for complete scripts
     )
     
-    # Extract code from markdown code blocks if present
-    code = response.strip()
-    if code.startswith("```"):
-        lines = code.split("\n")
-        # Remove first and last lines (``` markers)
-        code = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    # Extract code from markdown code blocks
+    code = extract_code_from_response(response, script.script_type)
+    
+    # Validate that the code appears complete
+    code = validate_script_code(code, script.script_type)
+    
+    return code
+
+
+def extract_code_from_response(response: str, script_type: ScriptType) -> str:
+    """Extract code from LLM response, handling markdown blocks and text preambles.
+    
+    Args:
+        response: Raw LLM response
+        script_type: Expected script type
+        
+    Returns:
+        Extracted code
+    """
+    import re
+    
+    response = response.strip()
+    
+    # Try to find code block with language specifier
+    lang_patterns = {
+        ScriptType.PYTHON: r"```(?:python|py)\n(.*?)```",
+        ScriptType.BASH: r"```(?:bash|sh)\n(.*?)```",
+        ScriptType.R: r"```(?:r|R)\n(.*?)```",
+    }
+    
+    pattern = lang_patterns.get(script_type)
+    if pattern:
+        match = re.search(pattern, response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+    
+    # Try generic code block
+    match = re.search(r"```\w*\n(.*?)```", response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    
+    # If response starts with ```, use original logic
+    if response.startswith("```"):
+        lines = response.split("\n")
+        # Find the closing ```
+        end_idx = len(lines)
+        for i in range(len(lines) - 1, 0, -1):
+            if lines[i].strip() == "```":
+                end_idx = i
+                break
+        return "\n".join(lines[1:end_idx])
+    
+    # No code block found, check if it looks like code already
+    # Python scripts typically start with imports, comments, or shebang
+    first_line = response.split("\n")[0].strip() if response else ""
+    if (first_line.startswith("#") or 
+        first_line.startswith("import ") or 
+        first_line.startswith("from ") or
+        first_line.startswith("#!/")):
+        return response
+    
+    # Response might be text description followed by code without proper block
+    # Look for shebang or import as code start
+    lines = response.split("\n")
+    for i, line in enumerate(lines):
+        if (line.strip().startswith("#!/") or 
+            line.strip().startswith("import ") or
+            line.strip().startswith("from ")):
+            return "\n".join(lines[i:])
+    
+    # Return as-is (validation will catch if it's not valid code)
+    return response
+
+
+def validate_script_code(code: str, script_type: ScriptType) -> str:
+    """Validate that generated code appears complete.
+    
+    Args:
+        code: The generated code
+        script_type: Type of script
+        
+    Returns:
+        The validated code
+        
+    Raises:
+        ValueError: If the code appears truncated or incomplete
+    """
+    if not code or len(code.strip()) < 50:
+        raise ValueError("Generated code is too short - likely truncated")
+    
+    lines = code.strip().split("\n")
+    
+    # A valid script should have a reasonable number of lines
+    if len(lines) < 20:
+        raise ValueError(
+            f"Generated code has only {len(lines)} lines - likely truncated. "
+            "A complete script should have at least 20 lines."
+        )
+    
+    if script_type == ScriptType.PYTHON:
+        # Check for common signs of truncation
+        last_line = lines[-1].strip() if lines else ""
+        
+        # Check if last line looks incomplete
+        incomplete_indicators = [
+            last_line.endswith("("),
+            last_line.endswith(","),
+            last_line.endswith("="),
+            last_line.endswith(":"),
+            "logging.critical(" in last_line and not last_line.endswith(")"),
+            last_line.startswith("#") and len(last_line) < 10,  # Truncated comment
+        ]
+        
+        if any(incomplete_indicators):
+            raise ValueError(
+                f"Generated Python code appears truncated. Last line: '{last_line[:50]}...'. "
+                "Try regenerating the script."
+            )
+        
+        # Check for balanced parentheses (basic check)
+        open_parens = code.count("(") - code.count(")")
+        if open_parens > 5:  # Allow some tolerance
+            raise ValueError(
+                f"Generated Python code has unbalanced parentheses ({open_parens} unclosed). "
+                "Code may be truncated."
+            )
     
     return code
 

@@ -178,6 +178,9 @@ def init(
     os.environ["ACO_STORAGE_DIR"] = str(storage_dir)
     os.environ["ACO_WORKING_DIR"] = str(cwd)
     
+    # Create aco_runs directory if it doesn't exist (in current working directory)
+    (cwd / "aco_runs").mkdir(parents=True, exist_ok=True)
+    
     # Check if frontend is built
     # Check in package (installed mode)
     frontend_dist = Path(__file__).parent / "static"
