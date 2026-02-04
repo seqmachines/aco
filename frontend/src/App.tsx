@@ -28,7 +28,7 @@ interface SidebarSection {
 const sections: SidebarSection[] = [
   { id: "intake", label: "Describe Your Experiment", shortLabel: "Describe" },
   { id: "scanning", label: "Scanning Files", shortLabel: "Scan" },
-  { id: "manifest", label: "Review Discovered Data", shortLabel: "Review" },
+  { id: "manifest", label: "Review Run Data", shortLabel: "Review" },
   { id: "understanding", label: "AI-Powered Analysis", shortLabel: "Analyze" },
   { id: "scripts", label: "Generate & Execute Scripts", shortLabel: "Scripts" },
   { id: "notebook", label: "Analysis Notebook", shortLabel: "Notebook" },
@@ -137,7 +137,7 @@ function App() {
       if (result) {
         setManifest(result.manifest)
       } else {
-        setError("Failed to update manifest.")
+        setError("Failed to update run data.")
       }
     },
     [manifest, updateManifest]

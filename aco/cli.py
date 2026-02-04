@@ -216,15 +216,9 @@ def init(
     display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     url = f"http://{display_host}:{port}"
     
-    console.print(
-        Panel(
-            f"[bold green]Starting aco server...[/bold green]\n\n"
-            f"[link={url}]{url}[/link]\n\n"
-            f"[dim]Press Ctrl+C to stop the server[/dim]",
-            title="[green]Server Ready[/green]",
-            border_style="green",
-        )
-    )
+    # Pass URL to the API process via environment variable so it can print the ready message
+    os.environ["ACO_CLI_URL"] = url
+    
     console.print()
     
     # Open browser

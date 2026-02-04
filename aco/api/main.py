@@ -97,6 +97,25 @@ async def lifespan(app: FastAPI):
     app.state.working_dir = working_dir
     
     print(f"aco API started. Storage: {storage_dir}, Working dir: {working_dir}")
+
+    # If launched from CLI, print the "Server Ready" message now that we are actually ready
+    cli_url = os.getenv("ACO_CLI_URL")
+    if cli_url:
+        from rich.console import Console
+        from rich.panel import Panel
+        
+        console = Console()
+        console.print()
+        console.print(
+            Panel(
+                f"[bold green]Starting aco server...[/bold green]\n\n"
+                f"[link={cli_url}]{cli_url}[/link]\n\n"
+                f"[dim]Press Ctrl+C to stop the server[/dim]",
+                title="[green]Server Ready[/green]",
+                border_style="green",
+            )
+        )
+        console.print()
     
     yield
     

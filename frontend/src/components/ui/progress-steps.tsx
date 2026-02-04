@@ -11,7 +11,7 @@ interface Step {
 const steps: Step[] = [
   { id: "intake", name: "Intake", description: "Describe your experiment" },
   { id: "scanning", name: "Scanning", description: "Discovering files" },
-  { id: "manifest", name: "Manifest", description: "Review data" },
+  { id: "manifest", name: "Run Review", description: "Review run data" },
   { id: "understanding", name: "Analysis", description: "LLM processing" },
   { id: "approved", name: "Complete", description: "Ready for QC" },
 ]
@@ -57,8 +57,8 @@ export function ProgressSteps({ currentStep }: ProgressStepsProps) {
                   isComplete
                     ? "border-primary bg-primary text-primary-foreground"
                     : isCurrent
-                    ? "border-primary bg-background text-primary glow-primary"
-                    : "border-border bg-background text-muted-foreground"
+                      ? "border-primary bg-background text-primary glow-primary"
+                      : "border-border bg-background text-muted-foreground"
                 )}
               >
                 {isComplete ? (

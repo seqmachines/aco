@@ -130,7 +130,7 @@ async def list_runs():
                     has_scripts="scripts" in stages,
                     has_notebook="notebook" in stages,
                     has_report="report" in stages,
-                    experiment_name=understanding.summary.split(".")[0][:50] if understanding and understanding.summary else None,
+                    experiment_name=None, # Don't use summary as name, it's too verbose
                     assay_type=understanding.assay_name if understanding else None,
                 )
                 
@@ -153,7 +153,7 @@ async def list_runs():
                 manifest_id=manifest_id,
                 stages_completed=["manifest"] + (["understanding"] if understanding else []),
                 has_understanding=understanding is not None,
-                experiment_name=understanding.summary.split(".")[0][:50] if understanding and understanding.summary else None,
+                experiment_name=None, # Don't use summary as name, it's too verbose
                 assay_type=understanding.assay_name if understanding else None,
             )
             runs.append(run_info)
@@ -196,7 +196,7 @@ async def get_run(manifest_id: str):
         has_scripts="scripts" in stages,
         has_notebook="notebook" in stages,
         has_report="report" in stages,
-        experiment_name=understanding.summary.split(".")[0][:50] if understanding and understanding.summary else None,
+        experiment_name=None, # Don't use summary as name, it's too verbose
         assay_type=understanding.assay_name if understanding else None,
     )
     

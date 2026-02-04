@@ -37,6 +37,13 @@ export function RunSelector({ currentManifestId, onSelectRun, onNewRun }: RunSel
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
+    const formatDisplayId = (id: string) => {
+        if (id.startsWith("manifest_")) {
+            return `Run ${id.slice(9, 15)}`
+        }
+        return id
+    }
+
     const fetchRuns = async () => {
         setIsLoading(true)
         setError(null)
@@ -100,7 +107,7 @@ export function RunSelector({ currentManifestId, onSelectRun, onNewRun }: RunSel
                 <div className="flex items-center gap-2 overflow-hidden">
                     <History className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
                     <span className="truncate">
-                        {currentRun?.experiment_name || currentManifestId?.slice(0, 8) || "No run selected"}
+                        {currentRun?.experiment_name || (currentManifestId ? formatDisplayId(currentManifestId) : "No run selected")}
                     </span>
                 </div>
                 <ChevronDown className={cn(
@@ -159,12 +166,12 @@ export function RunSelector({ currentManifestId, onSelectRun, onNewRun }: RunSel
                                             <CheckCircle className="h-3 w-3 text-success flex-shrink-0" />
                                         )}
                                         <span className="text-sm font-medium truncate">
-                                            {run.experiment_name || run.manifest_id.slice(0, 12)}
+                                            {run.experiment_name || formatDisplayId(run.manifest_id)}
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-2 mt-1">
                                         {run.assay_type && (
-                                            <Badge variant="outline" className="text-[10px] px-1">
+                                            <Badge variant="outline" className="text-[10px] px-1 max-w-[200px] truncate">
                                                 {run.assay_type}
                                             </Badge>
                                         )}
