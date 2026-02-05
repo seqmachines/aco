@@ -63,7 +63,13 @@ Based on the manifest above, provide:
 
 8. **Recommended Checks**: Suggest specific QC checks that should be performed
 
-9. **Summary**: Provide a clear, concise summary of what this experiment is about
+9. **Analysis Script Strategy**: Based on your understanding, think about what analysis scripts would be most valuable:
+   - What types of QC scripts should be generated (barcode validation, sequencing health, quality metrics)?
+   - What specific analyses would address the user's goals and known issues?
+   - What dependencies/tools would be needed?
+   - Include this reasoning in your summary.
+
+10. **Summary**: Provide a clear, concise summary of what this experiment is about, including your recommended analysis strategy and what scripts should be generated to investigate the quality concerns and goals
 
 Be specific and reference actual files and metadata from the manifest in your analysis."""
 

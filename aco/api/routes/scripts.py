@@ -624,7 +624,7 @@ async def install_deps_endpoint(request: InstallDepsRequest):
 async def env_status_endpoint(manifest_id: str):
     """Get the status of the execution environment."""
     status = get_environment_status(manifest_id)
-    
+
     return EnvStatusResponse(
         manifest_id=manifest_id,
         exists=status.exists,
@@ -632,3 +632,225 @@ async def env_status_endpoint(manifest_id: str):
         python_executable=status.python_executable,
         installed_packages=status.installed_packages,
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan Refinement
+# ---------------------------------------------------------------------------
+
+class RefinePlanRequest(BaseModel):
+    """Request to refine a script plan via chat feedback."""
+
+    manifest_id: str
+    feedback: str
+    model: str | None = None
+    api_key: str | None = None
+
+
+class RefinePlanResponse(BaseModel):
+    """Response with refined script plan."""
+
+    manifest_id: str
+    plan: ScriptPlan
+    message: str
+
+
+@router.post("/plan/refine", response_model=RefinePlanResponse)
+async def refine_plan_endpoint(request: RefinePlanRequest):
+    """Refine a script plan based on user feedback."""
+    from aco.engine.scripts import refine_script_plan
+
+    # Load existing plan
+    plan = _script_plans.get(request.manifest_id) or load_plan_from_disk(request.manifest_id)
+    if not plan:
+        raise HTTPException(404, "No script plan found. Generate one first.")
+
+    # Load understanding
+    understanding_store = get_understanding_store()
+    understanding = understanding_store.load(request.manifest_id)
+    if not understanding:
+        raise HTTPException(400, "Understanding not generated yet")
+
+    # Create client
+    api_key = request.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    model = request.model or "gemini-2.5-flash"
+
+    try:
+        client = GeminiClient(api_key=api_key, model_name=model)
+        updated_plan, response_msg = await refine_script_plan(
+            plan=plan,
+            feedback=request.feedback,
+            understanding=understanding,
+            client=client,
+        )
+        updated_plan.manifest_id = request.manifest_id
+
+        # Update caches
+        _script_plans[request.manifest_id] = updated_plan
+        save_plan_to_disk(request.manifest_id, updated_plan)
+        save_requirements_txt(request.manifest_id, updated_plan)
+
+        return RefinePlanResponse(
+            manifest_id=request.manifest_id,
+            plan=updated_plan,
+            message=response_msg,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Failed to refine plan: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Pre-existing Scripts
+# ---------------------------------------------------------------------------
+
+class ExistingScriptInfo(BaseModel):
+    """Info about an existing script found on disk."""
+
+    path: str
+    name: str
+    size_bytes: int
+    preview: str
+    source: str = Field(description="Where the script was found: 'data_dir' or 'previous_run'")
+
+
+class ExistingScriptsResponse(BaseModel):
+    """Response listing existing scripts."""
+
+    manifest_id: str
+    scripts: list[ExistingScriptInfo]
+
+
+@router.get("/existing/{manifest_id}", response_model=ExistingScriptsResponse)
+async def list_existing_scripts(manifest_id: str):
+    """List existing scripts from data directory and previous runs."""
+    manifest_store = get_manifest_store()
+    manifest = manifest_store.load(manifest_id)
+
+    found_scripts: list[ExistingScriptInfo] = []
+    seen_paths: set[str] = set()
+
+    script_extensions = {".py", ".R", ".r", ".sh"}
+
+    # 1. Scan data directory (from manifest target_directory)
+    if manifest and manifest.user_intake.target_directory:
+        data_dir = Path(manifest.user_intake.target_directory)
+        if data_dir.exists():
+            for ext in script_extensions:
+                for script_file in data_dir.rglob(f"*{ext}"):
+                    if str(script_file) in seen_paths:
+                        continue
+                    # Skip __pycache__ and hidden dirs
+                    if any(part.startswith(".") or part == "__pycache__" for part in script_file.parts):
+                        continue
+                    seen_paths.add(str(script_file))
+                    try:
+                        content = script_file.read_text(errors="replace")
+                        preview = "\n".join(content.splitlines()[:20])
+                    except Exception:
+                        preview = "(could not read)"
+                    found_scripts.append(ExistingScriptInfo(
+                        path=str(script_file),
+                        name=script_file.name,
+                        size_bytes=script_file.stat().st_size,
+                        preview=preview,
+                        source="data_dir",
+                    ))
+
+    # 2. Scan previous aco_runs for scripts
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    runs_dir = Path(working_dir) / "aco_runs"
+    if runs_dir.exists():
+        for run_dir in runs_dir.iterdir():
+            if not run_dir.is_dir() or run_dir.name == manifest_id:
+                continue
+            scripts_dir = run_dir / "scripts"
+            if not scripts_dir.exists():
+                continue
+            for ext in script_extensions:
+                for script_file in scripts_dir.glob(f"*{ext}"):
+                    if str(script_file) in seen_paths:
+                        continue
+                    seen_paths.add(str(script_file))
+                    try:
+                        content = script_file.read_text(errors="replace")
+                        preview = "\n".join(content.splitlines()[:20])
+                    except Exception:
+                        preview = "(could not read)"
+                    found_scripts.append(ExistingScriptInfo(
+                        path=str(script_file),
+                        name=script_file.name,
+                        size_bytes=script_file.stat().st_size,
+                        preview=preview,
+                        source="previous_run",
+                    ))
+
+    return ExistingScriptsResponse(
+        manifest_id=manifest_id,
+        scripts=found_scripts,
+    )
+
+
+class UpdateExistingScriptRequest(BaseModel):
+    """Request to update an existing script."""
+
+    manifest_id: str
+    script_path: str
+    instructions: str
+    model: str | None = None
+    api_key: str | None = None
+
+
+class UpdateExistingScriptResponse(BaseModel):
+    """Response with updated script code."""
+
+    manifest_id: str
+    original_path: str
+    saved_path: str
+    code: str
+
+
+@router.post("/update-existing", response_model=UpdateExistingScriptResponse)
+async def update_existing_script_endpoint(request: UpdateExistingScriptRequest):
+    """Read an existing script and update it based on instructions."""
+    from aco.engine.scripts import update_existing_script
+
+    # Validate path exists
+    if not Path(request.script_path).exists():
+        raise HTTPException(404, f"Script not found: {request.script_path}")
+
+    # Load understanding
+    understanding_store = get_understanding_store()
+    understanding = understanding_store.load(request.manifest_id)
+    if not understanding:
+        raise HTTPException(400, "Understanding not generated yet")
+
+    # Create client
+    api_key = request.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    model = request.model or "gemini-2.5-flash"
+
+    try:
+        client = GeminiClient(api_key=api_key, model_name=model)
+        updated_code = await update_existing_script(
+            script_path=request.script_path,
+            understanding=understanding,
+            instructions=request.instructions,
+            client=client,
+        )
+
+        # Save updated script to the current run's scripts directory
+        scripts_dir = get_scripts_dir(request.manifest_id)
+        script_name = Path(request.script_path).name
+        saved_path = scripts_dir / script_name
+        with open(saved_path, "w") as f:
+            f.write(updated_code)
+
+        return UpdateExistingScriptResponse(
+            manifest_id=request.manifest_id,
+            original_path=request.script_path,
+            saved_path=str(saved_path),
+            code=updated_code,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to update script: {str(e)}")

@@ -295,4 +295,91 @@ export interface UploadedFile {
 export interface ConfigResponse {
   working_dir: string;
   storage_dir: string;
+  has_api_key: boolean;
+  api_key_masked: string | null;
+  api_key: string | null;
+}
+
+// Script plan types (for displaying draft plan on understanding page)
+export interface PlannedScript {
+  name: string;
+  category: string;
+  script_type: string;
+  description: string;
+  code: string;
+  dependencies: string[];
+  input_files: string[];
+  output_files: string[];
+  estimated_runtime: string | null;
+  requires_approval: boolean;
+}
+
+export interface ScriptPlan {
+  manifest_id: string;
+  scripts: PlannedScript[];
+  execution_order: string[];
+  total_estimated_runtime: string | null;
+  generated_at: string;
+  is_approved: boolean;
+}
+
+// Chat message for plan feedback
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+}
+
+// Chat API response
+export interface ChatResponse {
+  response: string;
+  artifact_updated: boolean;
+  updated_data?: Record<string, unknown>;
+}
+
+// Chat history response
+export interface ChatHistoryResponse {
+  manifest_id: string;
+  step: string;
+  messages: ChatMessage[];
+}
+
+// Pipeline phases
+export type PipelinePhase =
+  | "idle"
+  | "generating_code"
+  | "creating_env"
+  | "installing_deps"
+  | "executing"
+  | "complete"
+  | "failed";
+
+// Pipeline step result
+export interface PipelineStepResult {
+  step: string;
+  success: boolean;
+  message: string;
+}
+
+// Pipeline response
+export interface ExecutePipelineResponse {
+  manifest_id: string;
+  steps: PipelineStepResult[];
+  execution_results: ExecutionResult[];
+  all_succeeded: boolean;
+  message: string;
+}
+
+// Execution result
+export interface ExecutionResult {
+  script_name: string;
+  success: boolean;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  duration_seconds: number;
+  started_at: string;
+  completed_at: string | null;
+  error_message: string | null;
+  output_files: string[];
 }

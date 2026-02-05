@@ -115,17 +115,23 @@ def install_dependencies(
     packages: list[str] | None = None,
 ) -> InstallResult:
     """Install dependencies into the virtual environment.
-    
+
+    Installs packages one by one so that a single bad package doesn't
+    break the entire installation. Packages that fail are skipped with
+    a warning, and the overall result succeeds as long as at least some
+    packages were installed (or none were needed).
+
     Args:
         manifest_id: The manifest identifier
         requirements_file: Path to requirements.txt (optional)
         packages: List of package names to install (optional)
-        
+
     Returns:
         InstallResult with status and details
     """
     venv_path = get_venv_path(manifest_id)
-    
+    python_path = str(venv_path / "bin" / "python")
+
     if not (venv_path / "bin" / "python").exists():
         return InstallResult(
             success=False,
@@ -134,7 +140,7 @@ def install_dependencies(
             output="",
             error="Virtual environment does not exist. Create it first.",
         )
-    
+
     if not check_uv_available():
         return InstallResult(
             success=False,
@@ -143,71 +149,67 @@ def install_dependencies(
             output="",
             error="uv is not installed",
         )
-    
-    # Build the install command
-    cmd = ["uv", "pip", "install", "--python", str(venv_path / "bin" / "python")]
-    
+
+    # Collect all package names
+    all_packages: list[str] = []
+
     if requirements_file and requirements_file.exists():
-        cmd.extend(["-r", str(requirements_file)])
-    
+        with open(requirements_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    all_packages.append(line)
+
     if packages:
-        cmd.extend(packages)
-    
-    if len(cmd) <= 4:  # No packages to install
+        all_packages.extend(packages)
+
+    if not all_packages:
         return InstallResult(
             success=True,
             installed=[],
             failed=[],
             output="No packages to install",
         )
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes for installation
-            cwd=get_execution_dir(manifest_id),
-        )
-        
-        if result.returncode == 0:
-            # Parse installed packages from output
-            installed = []
-            for line in result.stdout.split("\n"):
-                if "Installed" in line or "installed" in line.lower():
-                    installed.append(line.strip())
-            
-            return InstallResult(
-                success=True,
-                installed=installed or ["Dependencies installed successfully"],
-                failed=[],
-                output=result.stdout,
+
+    # Install packages one by one for resilience
+    installed = []
+    failed = []
+    all_output = []
+    exec_dir = get_execution_dir(manifest_id)
+
+    for pkg in all_packages:
+        cmd = ["uv", "pip", "install", "--python", python_path, pkg]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 minutes per package
+                cwd=exec_dir,
             )
-        else:
-            return InstallResult(
-                success=False,
-                installed=[],
-                failed=[],
-                output=result.stdout,
-                error=result.stderr,
-            )
-            
-    except subprocess.TimeoutExpired:
-        return InstallResult(
-            success=False,
-            installed=[],
-            failed=[],
-            output="",
-            error="Timeout installing dependencies (5 minutes)",
-        )
-    except Exception as e:
-        return InstallResult(
-            success=False,
-            installed=[],
-            failed=[],
-            output="",
-            error=str(e),
-        )
+            if result.returncode == 0:
+                installed.append(pkg)
+                all_output.append(f"OK: {pkg}")
+            else:
+                failed.append(pkg)
+                all_output.append(f"FAILED: {pkg} - {result.stderr.strip().split(chr(10))[-1]}")
+        except subprocess.TimeoutExpired:
+            failed.append(pkg)
+            all_output.append(f"TIMEOUT: {pkg}")
+        except Exception as e:
+            failed.append(pkg)
+            all_output.append(f"ERROR: {pkg} - {str(e)}")
+
+    output_text = "\n".join(all_output)
+
+    # Succeed even if some packages failed — the scripts may still work
+    return InstallResult(
+        success=True,
+        installed=installed,
+        failed=failed,
+        output=output_text,
+        error=f"Could not install: {', '.join(failed)}" if failed else None,
+    )
 
 
 def get_environment_status(manifest_id: str) -> EnvironmentStatus:

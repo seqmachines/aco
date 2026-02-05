@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from aco.api.routes import (
+    chat_router,
     intake_router,
     manifest_router,
     notebooks_router,
@@ -19,6 +20,7 @@ from aco.api.routes import (
     scripts_router,
     understanding_router,
 )
+from aco.api.routes.chat import set_stores as set_chat_stores
 from aco.api.routes.intake import set_store as set_intake_store
 from aco.api.routes.manifest import set_store as set_manifest_store
 from aco.api.routes.notebooks import set_stores as set_notebooks_stores
@@ -82,6 +84,7 @@ async def lifespan(app: FastAPI):
     understanding_store = UnderstandingStore(str(storage_dir / "understandings"))
     
     # Set stores on routers
+    set_chat_stores(manifest_store, understanding_store)
     set_intake_store(manifest_store)
     set_manifest_store(manifest_store)
     set_notebooks_stores(manifest_store, understanding_store)
@@ -147,6 +150,7 @@ def create_app() -> FastAPI:
     )
     
     # Include API routers
+    app.include_router(chat_router)
     app.include_router(intake_router)
     app.include_router(scan_router)
     app.include_router(manifest_router)
@@ -162,11 +166,30 @@ def create_app() -> FastAPI:
         return {"status": "healthy"}
     
     @app.get("/api/config")
-    async def config():
-        """Get current configuration."""
+    async def config(reveal_key: bool = False):
+        """Get current configuration.
+        
+        Args:
+            reveal_key: If true, return the full API key (for display in settings)
+        """
+        import os
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+        
+        # Mask the key by default, showing only first 4 and last 4 chars
+        if api_key and not reveal_key:
+            if len(api_key) > 12:
+                masked_key = api_key[:4] + "*" * (len(api_key) - 8) + api_key[-4:]
+            else:
+                masked_key = "*" * len(api_key)
+        else:
+            masked_key = api_key if reveal_key else ""
+        
         return {
             "working_dir": str(get_working_dir()),
             "storage_dir": str(get_storage_dir()),
+            "has_api_key": bool(api_key),
+            "api_key_masked": masked_key if api_key else None,
+            "api_key": api_key if reveal_key and api_key else None,
         }
     
     # Serve frontend static files if available

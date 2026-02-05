@@ -9,6 +9,7 @@ import { NotebookEditor } from "@/components/NotebookEditor"
 import { ReportViewer } from "@/components/ReportViewer"
 import { RunSelector } from "@/components/RunSelector"
 import { Settings } from "@/components/Settings"
+import { ChatPanel } from "@/components/ChatPanel"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -17,7 +18,7 @@ import { useIntake, useManifest, useUnderstanding, useConfig } from "@/hooks/use
 import { useTheme } from "@/hooks/useTheme"
 import { useSettings } from "@/hooks/useSettings"
 import { useAutoSave } from "@/hooks/useAutoSave"
-import type { AppStep, Manifest, ExperimentUnderstanding, IntakeFormData } from "@/types"
+import type { AppStep, Manifest, ExperimentUnderstanding, IntakeFormData, ScriptPlan } from "@/types"
 
 interface SidebarSection {
   id: AppStep
@@ -29,7 +30,7 @@ const sections: SidebarSection[] = [
   { id: "intake", label: "Describe Your Experiment", shortLabel: "Describe" },
   { id: "scanning", label: "Scanning Files", shortLabel: "Scan" },
   { id: "manifest", label: "Review Run Data", shortLabel: "Review" },
-  { id: "understanding", label: "AI-Powered Analysis", shortLabel: "Analyze" },
+  { id: "understanding", label: "Analyze & Plan", shortLabel: "Analyze" },
   { id: "scripts", label: "Generate & Execute Scripts", shortLabel: "Scripts" },
   { id: "notebook", label: "Analysis Notebook", shortLabel: "Notebook" },
   { id: "report", label: "QC Report", shortLabel: "Report" },
@@ -40,13 +41,16 @@ function App() {
   const [currentStep, setCurrentStep] = useState<AppStep>("intake")
   const [manifest, setManifest] = useState<Manifest | null>(null)
   const [understanding, setUnderstanding] = useState<ExperimentUnderstanding | null>(null)
+  const [scriptPlan, setScriptPlan] = useState<ScriptPlan | null>(null)
+  const [, setScriptPlanLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [chatCollapsed, setChatCollapsed] = useState(false)
 
   const { theme, toggleTheme } = useTheme()
   const { settings, updateSettings, availableModels } = useSettings()
-  const { config } = useConfig()
+  const { config, fetchRevealedApiKey } = useConfig()
   const { savedData, saveData, clearData } = useAutoSave()
 
   const { submitIntake, isLoading: intakeLoading, error: intakeError } = useIntake()
@@ -60,6 +64,41 @@ function App() {
 
   // Get the default directory from config (where aco was started)
   const defaultDirectory = config?.working_dir || ""
+
+  // Auto-generate script plan after understanding is available
+  const generateScriptPlan = useCallback(
+    async (manifestId: string) => {
+      setScriptPlanLoading(true)
+      try {
+        // Try loading existing plan first
+        const existingRes = await fetch(`/scripts/plan/${manifestId}`)
+        if (existingRes.ok) {
+          const data = await existingRes.json()
+          if (data.plan) {
+            setScriptPlan(data.plan)
+            setScriptPlanLoading(false)
+            return
+          }
+        }
+
+        // Generate new plan
+        const response = await fetch("/scripts/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ manifest_id: manifestId }),
+        })
+        if (response.ok) {
+          const data = await response.json()
+          setScriptPlan(data.plan)
+        }
+      } catch (e) {
+        console.error("Failed to generate script plan:", e)
+      } finally {
+        setScriptPlanLoading(false)
+      }
+    },
+    []
+  )
 
   // Load latest run on startup
   useEffect(() => {
@@ -76,6 +115,14 @@ function App() {
             if (understandingRes.ok) {
               const uData = await understandingRes.json()
               setUnderstanding(uData.understanding)
+              // Try loading existing script plan
+              try {
+                const planRes = await fetch(`/scripts/plan/${data.manifest.id}`)
+                if (planRes.ok) {
+                  const planData = await planRes.json()
+                  if (planData.plan) setScriptPlan(planData.plan)
+                }
+              } catch (_e) { /* no plan yet, that's fine */ }
               // If we have understanding, check runs to see how far we got
               const runRes = await fetch(`/runs/${data.manifest.id}`)
               if (runRes.ok) {
@@ -148,6 +195,7 @@ function App() {
 
     setError(null)
     setCurrentStep("understanding")
+    setScriptPlan(null)
 
     const result = await generateUnderstanding(
       manifest.id,
@@ -157,17 +205,20 @@ function App() {
     )
     if (result) {
       setUnderstanding(result.understanding)
+      // Auto-generate script plan after understanding
+      generateScriptPlan(manifest.id)
     } else {
       // Go back to Manifest Review step and open settings
       setCurrentStep("manifest")
       setSettingsOpen(true)
     }
-  }, [manifest, generateUnderstanding, settings.model, settings.apiKey])
+  }, [manifest, generateUnderstanding, generateScriptPlan, settings.model, settings.apiKey])
 
   const handleRegenerate = useCallback(async () => {
     if (!manifest) return
 
     setError(null)
+    setScriptPlan(null)
     const result = await generateUnderstanding(
       manifest.id,
       true,
@@ -176,12 +227,14 @@ function App() {
     )
     if (result) {
       setUnderstanding(result.understanding)
+      // Auto-regenerate script plan after understanding
+      generateScriptPlan(manifest.id)
     } else {
       // Go back to Manifest Review step and open settings
       setCurrentStep("manifest")
       setSettingsOpen(true)
     }
-  }, [manifest, generateUnderstanding, settings.model, settings.apiKey])
+  }, [manifest, generateUnderstanding, generateScriptPlan, settings.model, settings.apiKey])
 
   const handleApprove = useCallback(
     async (edits?: Record<string, string>) => {
@@ -203,9 +256,16 @@ function App() {
     setCurrentStep("intake")
     setManifest(null)
     setUnderstanding(null)
+    setScriptPlan(null)
     setError(null)
     clearData()
   }, [clearData])
+
+  // Handle artifact updates from chat panel
+  const handleArtifactUpdate = useCallback((_step: AppStep, _data: Record<string, unknown>) => {
+    // Future: when chat handlers return updated artifacts, apply them here.
+    // For now, artifact modifications happen via dedicated endpoints (regenerate, refine).
+  }, [])
 
   // Handle sidebar navigation
   const handleSectionClick = (sectionId: AppStep) => {
@@ -222,7 +282,7 @@ function App() {
   const currentIndex = sections.findIndex(s => s.id === currentStep)
 
   return (
-    <div className="min-h-screen bg-background flex">
+    <div className="h-screen overflow-hidden bg-background flex">
       {/* Collapse Button - Fixed at viewport center */}
       <button
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -386,7 +446,7 @@ function App() {
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-h-screen">
+      <div className="flex-1 flex flex-col h-full min-w-0">
         {/* Header */}
         <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-sm px-6 py-3">
           <div className="flex items-center justify-between">
@@ -398,7 +458,7 @@ function App() {
             <div className="flex items-center gap-2">
               {manifest && (
                 <Badge variant="outline" className="text-[10px] font-mono">
-                  {manifest.id}
+                  {manifest.id.replace("manifest_", "run_")}
                 </Badge>
               )}
               {currentStep === "intake" && savedData && (
@@ -440,6 +500,8 @@ function App() {
           theme={theme}
           onToggleTheme={toggleTheme}
           availableModels={availableModels}
+          config={config}
+          onRevealServerKey={fetchRevealedApiKey}
         />
 
         {/* Main Content */}
@@ -501,16 +563,13 @@ function App() {
             <div className="max-w-5xl mx-auto">
               <ScriptRunner
                 manifestId={manifest.id}
+                initialPlan={scriptPlan}
+                understanding={understanding}
+                onPlanUpdate={setScriptPlan}
                 onComplete={() => setCurrentStep("notebook")}
+                onBack={() => setCurrentStep("understanding")}
+                onProceed={() => setCurrentStep("notebook")}
               />
-              <div className="flex justify-between mt-6 pt-4 border-t">
-                <Button variant="outline" onClick={() => setCurrentStep("understanding")}>
-                  Back to Understanding
-                </Button>
-                <Button onClick={() => setCurrentStep("notebook")}>
-                  Proceed to Notebook
-                </Button>
-              </div>
             </div>
           )}
 
@@ -599,6 +658,15 @@ function App() {
           </div>
         </footer>
       </div>
+
+      {/* Chat Panel - Right Sidebar */}
+      <ChatPanel
+        manifestId={manifest?.id}
+        currentStep={currentStep}
+        collapsed={chatCollapsed}
+        onToggle={() => setChatCollapsed(!chatCollapsed)}
+        onArtifactUpdate={handleArtifactUpdate}
+      />
     </div>
   )
 }

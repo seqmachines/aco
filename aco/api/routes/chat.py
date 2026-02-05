@@ -1,0 +1,172 @@
+"""Chat API routes for LLM-powered conversation across all workflow steps."""
+
+import os
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from aco.engine.chat import (
+    ChatMessage,
+    ChatStore,
+    get_chat_store,
+    handle_chat_message,
+)
+from aco.engine.gemini import GeminiClient
+from aco.engine import UnderstandingStore
+from aco.manifest import ManifestStore
+
+
+router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+# ---------------------------------------------------------------------------
+# Request / Response models
+# ---------------------------------------------------------------------------
+
+class ChatMessageRequest(BaseModel):
+    """Request to send a chat message."""
+
+    manifest_id: str
+    step: str = Field(..., description="Workflow step: intake, scanning, manifest, understanding, scripts, notebook, report")
+    message: str
+    model: str | None = None
+    api_key: str | None = None
+
+
+class ChatMessageResponse(BaseModel):
+    """Response from a chat message."""
+
+    response: str
+    artifact_updated: bool = False
+    updated_data: dict | None = None
+
+
+class ChatHistoryResponse(BaseModel):
+    """Response containing chat history."""
+
+    manifest_id: str
+    step: str
+    messages: list[dict]
+
+
+# ---------------------------------------------------------------------------
+# Store instances (set during app startup via set_stores)
+# ---------------------------------------------------------------------------
+
+_manifest_store: ManifestStore | None = None
+_understanding_store: UnderstandingStore | None = None
+
+
+def set_stores(manifest_store: ManifestStore, understanding_store: UnderstandingStore):
+    """Set the store instances for this router."""
+    global _manifest_store, _understanding_store
+    _manifest_store = manifest_store
+    _understanding_store = understanding_store
+
+
+def get_manifest_store() -> ManifestStore:
+    if _manifest_store is None:
+        raise HTTPException(500, "Manifest store not initialized")
+    return _manifest_store
+
+
+def get_understanding_store() -> UnderstandingStore:
+    if _understanding_store is None:
+        raise HTTPException(500, "Understanding store not initialized")
+    return _understanding_store
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+VALID_STEPS = {"intake", "scanning", "manifest", "understanding", "scripts", "notebook", "report"}
+
+
+@router.post("/message", response_model=ChatMessageResponse)
+async def send_message(request: ChatMessageRequest):
+    """Send a chat message and get an LLM response for the current step."""
+    if request.step not in VALID_STEPS:
+        raise HTTPException(400, f"Invalid step: {request.step}. Must be one of: {', '.join(sorted(VALID_STEPS))}")
+
+    # Create Gemini client
+    api_key = request.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    model = request.model or "gemini-2.5-flash"
+
+    try:
+        client = GeminiClient(api_key=api_key, model_name=model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # Build step-specific context
+    context: dict = {}
+
+    manifest_store = get_manifest_store()
+    understanding_store = get_understanding_store()
+
+    # Load manifest for context (used by most steps)
+    manifest = manifest_store.load(request.manifest_id)
+    if manifest:
+        context["manifest"] = manifest
+
+    # Load understanding for relevant steps
+    if request.step in ("understanding", "scripts", "notebook", "report"):
+        understanding = understanding_store.load(request.manifest_id)
+        if understanding:
+            context["understanding"] = understanding
+
+    # Load script plan for scripts step
+    if request.step == "scripts":
+        try:
+            from aco.api.routes.scripts import _script_plans, load_plan_from_disk
+            plan = _script_plans.get(request.manifest_id) or load_plan_from_disk(request.manifest_id)
+            if plan:
+                context["plan"] = plan
+        except ImportError:
+            pass
+
+    try:
+        response_text, artifact_updated, updated_data = await handle_chat_message(
+            manifest_id=request.manifest_id,
+            step=request.step,
+            message=request.message,
+            client=client,
+            **context,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Chat error: {str(e)}")
+
+    return ChatMessageResponse(
+        response=response_text,
+        artifact_updated=artifact_updated,
+        updated_data=updated_data,
+    )
+
+
+@router.get("/history/{manifest_id}/{step}", response_model=ChatHistoryResponse)
+async def get_history(manifest_id: str, step: str):
+    """Get chat history for a manifest and step."""
+    if step not in VALID_STEPS:
+        raise HTTPException(400, f"Invalid step: {step}")
+
+    store = get_chat_store()
+    messages = store.load_messages(manifest_id, step)
+
+    return ChatHistoryResponse(
+        manifest_id=manifest_id,
+        step=step,
+        messages=[msg.model_dump(mode="json") for msg in messages],
+    )
+
+
+@router.delete("/history/{manifest_id}/{step}")
+async def clear_history(manifest_id: str, step: str):
+    """Clear chat history for a manifest and step."""
+    if step not in VALID_STEPS:
+        raise HTTPException(400, f"Invalid step: {step}")
+
+    store = get_chat_store()
+    store.clear_messages(manifest_id, step)
+
+    return {"message": f"Chat history cleared for {manifest_id}/{step}"}

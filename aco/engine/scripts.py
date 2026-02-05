@@ -497,3 +497,209 @@ def get_script_extension(script_type: ScriptType) -> str:
         ScriptType.BASH: ".sh",
         ScriptType.R: ".R",
     }[script_type]
+
+
+# ---------------------------------------------------------------------------
+# Plan refinement
+# ---------------------------------------------------------------------------
+
+REFINE_PLAN_PROMPT = """You are refining an existing script plan based on user feedback.
+
+# Current Script Plan
+
+{plan_json}
+
+# Experiment Context
+
+{understanding_summary}
+
+# User Feedback
+
+{feedback}
+
+# Instructions
+
+Based on the user's feedback, modify the script plan accordingly. You may:
+- Add new scripts
+- Remove scripts
+- Modify existing script descriptions, dependencies, inputs, or outputs
+- Change execution order
+
+Return the COMPLETE updated plan (not just the changes).
+Keep input_patterns as glob patterns. Limit to 3-5 scripts.
+"""
+
+
+async def refine_script_plan(
+    plan: ScriptPlan,
+    feedback: str,
+    understanding: ExperimentUnderstanding,
+    client: GeminiClient | None = None,
+) -> tuple[ScriptPlan, str]:
+    """Refine a script plan based on user feedback.
+
+    Args:
+        plan: The current script plan
+        feedback: User's feedback/instructions
+        understanding: Experiment context
+        client: Optional Gemini client
+
+    Returns:
+        Tuple of (updated_plan, response_message)
+    """
+    if client is None:
+        client = get_gemini_client()
+
+    # Build compact plan JSON (exclude code to save tokens)
+    plan_data = []
+    for s in plan.scripts:
+        plan_data.append({
+            "name": s.name,
+            "category": s.category.value if hasattr(s.category, "value") else s.category,
+            "script_type": s.script_type.value if hasattr(s.script_type, "value") else s.script_type,
+            "description": s.description,
+            "dependencies": s.dependencies,
+            "input_files": s.input_files,
+            "output_files": s.output_files,
+        })
+
+    import json
+    plan_json = json.dumps(plan_data, indent=2)
+
+    prompt = REFINE_PLAN_PROMPT.format(
+        plan_json=plan_json,
+        understanding_summary=understanding.summary[:500],
+        feedback=feedback,
+    )
+
+    refined = await client.generate_structured_async(
+        prompt=prompt,
+        response_schema=ScriptPlanSchema,
+        system_instruction=SCRIPT_GENERATION_SYSTEM,
+        temperature=0.3,
+    )
+
+    # Convert to full ScriptPlan
+    full_scripts = []
+    for s in refined.scripts:
+        full_scripts.append(GeneratedScript(
+            name=s.name,
+            category=s.category,
+            script_type=s.script_type,
+            description=s.description,
+            code="",
+            dependencies=s.dependencies,
+            input_files=s.input_patterns,
+            output_files=s.output_files,
+            estimated_runtime=s.estimated_runtime,
+            requires_approval=s.requires_approval,
+        ))
+
+    updated_plan = ScriptPlan(
+        manifest_id=plan.manifest_id,
+        scripts=full_scripts,
+        execution_order=refined.execution_order,
+        total_estimated_runtime=refined.total_estimated_runtime,
+    )
+
+    # Build a summary message of changes
+    old_names = {s.name for s in plan.scripts}
+    new_names = {s.name for s in updated_plan.scripts}
+    added = new_names - old_names
+    removed = old_names - new_names
+
+    parts = [f"Plan updated to {len(updated_plan.scripts)} scripts."]
+    if added:
+        parts.append(f"Added: {', '.join(added)}.")
+    if removed:
+        parts.append(f"Removed: {', '.join(removed)}.")
+
+    return updated_plan, " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Pre-existing script utilities
+# ---------------------------------------------------------------------------
+
+def read_existing_script(script_path: str) -> str:
+    """Read the contents of an existing script file.
+
+    Args:
+        script_path: Path to the script file
+
+    Returns:
+        The file contents as a string
+
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+    """
+    from pathlib import Path
+    p = Path(script_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Script not found: {script_path}")
+    return p.read_text()
+
+
+UPDATE_SCRIPT_PROMPT = """You are updating an existing bioinformatics script based on user instructions.
+
+# Current Script Code
+
+```
+{current_code}
+```
+
+# Experiment Context
+
+{understanding_summary}
+
+# User Instructions
+
+{instructions}
+
+# Rules
+
+1. Preserve the overall structure and logic of the script.
+2. Update input paths, output paths, and parameters as instructed.
+3. Ensure the script remains runnable and well-structured.
+4. Output ONLY the complete updated script code, no explanations.
+"""
+
+
+async def update_existing_script(
+    script_path: str,
+    understanding: ExperimentUnderstanding,
+    instructions: str,
+    client: GeminiClient | None = None,
+) -> str:
+    """Read an existing script and update it based on instructions.
+
+    Args:
+        script_path: Path to the existing script
+        understanding: Experiment context
+        instructions: User instructions for updates
+        client: Optional Gemini client
+
+    Returns:
+        The updated script code
+    """
+    if client is None:
+        client = get_gemini_client()
+
+    current_code = read_existing_script(script_path)
+
+    prompt = UPDATE_SCRIPT_PROMPT.format(
+        current_code=current_code,
+        understanding_summary=understanding.summary[:500],
+        instructions=instructions,
+    )
+
+    response = await client.generate_async(
+        prompt=prompt,
+        system_instruction=SCRIPT_GENERATION_SYSTEM,
+        temperature=0.2,
+        max_output_tokens=16384,
+    )
+
+    # Extract code from response
+    code = extract_code_from_response(response, ScriptType.PYTHON)
+    return code

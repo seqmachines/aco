@@ -7,6 +7,9 @@ import type {
   ApprovalResponse,
   ConfigResponse,
   IntakeFormData,
+  ChatResponse,
+  ChatMessage,
+  AppStep,
 } from "@/types"
 
 // In production, API is served from same origin. In dev, proxy handles /api -> :8000
@@ -48,7 +51,20 @@ export function useConfig() {
     fetchConfig()
   }, [])
 
-  return { config, isLoading }
+  const fetchRevealedApiKey = async (): Promise<string | null> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/config?reveal_key=true`)
+      if (response.ok) {
+        const data = await response.json()
+        return data.api_key || null
+      }
+    } catch {
+      // Failed to fetch
+    }
+    return null
+  }
+
+  return { config, isLoading, fetchRevealedApiKey }
 }
 
 // Intake hook
@@ -318,4 +334,76 @@ export function useUnderstanding() {
     isLoading,
     error,
   }
+}
+
+// Chat hook
+export function useChat() {
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const sendMessage = useCallback(
+    async (
+      manifestId: string,
+      step: AppStep,
+      message: string
+    ): Promise<ChatResponse | null> => {
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        const response = await fetch(`${API_BASE}/chat/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            manifest_id: manifestId,
+            step,
+            message,
+          }),
+        })
+
+        return await handleResponse<ChatResponse>(response)
+      } catch (e) {
+        const message =
+          e instanceof Error ? e.message : "Failed to send message"
+        setError(message)
+        return null
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    []
+  )
+
+  const getHistory = useCallback(
+    async (manifestId: string, step: AppStep): Promise<ChatMessage[]> => {
+      try {
+        const response = await fetch(
+          `${API_BASE}/chat/history/${manifestId}/${step}`
+        )
+        if (response.ok) {
+          const data = await response.json()
+          return data.messages || []
+        }
+      } catch {
+        // No history yet
+      }
+      return []
+    },
+    []
+  )
+
+  const clearHistory = useCallback(
+    async (manifestId: string, step: AppStep): Promise<void> => {
+      try {
+        await fetch(`${API_BASE}/chat/history/${manifestId}/${step}`, {
+          method: "DELETE",
+        })
+      } catch {
+        // Ignore
+      }
+    },
+    []
+  )
+
+  return { sendMessage, getHistory, clearHistory, isLoading, error }
 }

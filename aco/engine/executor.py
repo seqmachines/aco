@@ -16,6 +16,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import glob
+import re
 
 from pydantic import BaseModel, Field
 
@@ -60,12 +62,66 @@ class ScriptExecutor:
         if "PYTHONPATH" not in env:
             env["PYTHONPATH"] = ""
         return env
+
+    def _extract_required_args(self, code: str) -> list[str]:
+        """Extract required argparse arguments from script code."""
+        if not code:
+            return []
+        pattern = re.compile(
+            r"add_argument\(\s*['\"]--(?P<name>[a-zA-Z0-9_]+)['\"][^)]*required=True",
+            re.DOTALL,
+        )
+        return list({match.group("name") for match in pattern.finditer(code)})
+
+    def _resolve_input_matches(self, patterns: list[str], data_dir: Path) -> list[str]:
+        """Resolve glob patterns relative to data_dir into file paths."""
+        matches: list[str] = []
+        for pattern in patterns:
+            search_path = str(data_dir / pattern)
+            matches.extend(glob.glob(search_path, recursive=True))
+        # Deduplicate while preserving order
+        seen = set()
+        deduped = []
+        for m in matches:
+            if m not in seen:
+                seen.add(m)
+                deduped.append(m)
+        return deduped
+
+    def _select_args_for_required(
+        self,
+        arg_name: str,
+        patterns: list[str],
+        data_dir: Path,
+    ) -> list[str]:
+        """Select appropriate input arguments based on arg name and patterns."""
+        if not patterns:
+            return []
+
+        lower = arg_name.lower()
+        matches = self._resolve_input_matches(patterns, data_dir)
+        if not matches:
+            return []
+
+        # If argument expects a directory, use the common parent
+        if lower.endswith("_dir") or "dir" in lower:
+            parents = [str(Path(m).parent) for m in matches]
+            common_dir = os.path.commonpath(parents) if parents else None
+            return [common_dir] if common_dir else []
+
+        # If argument expects a single file, pick the first match
+        if any(key in lower for key in ["whitelist", "reference", "ref", "csv", "tsv", "file", "path"]):
+            return [matches[0]]
+
+        # Otherwise pass all matches (works for nargs="+")
+        return matches
     
     async def execute_script(
         self,
         script: GeneratedScript,
         script_path: Path,
         output_dir: Path,
+        data_dir: Path | None = None,
         input_args: list[str] | None = None,
     ) -> ExecutionResult:
         """Execute a script and capture results.
@@ -74,6 +130,7 @@ class ScriptExecutor:
             script: The script specification
             script_path: Path to the script file
             output_dir: Directory for outputs
+            data_dir: Directory containing input data files
             input_args: Additional command-line arguments
         
         Returns:
@@ -85,12 +142,27 @@ class ScriptExecutor:
         interpreter = self._get_interpreter(script.script_type)
         cmd = interpreter + [str(script_path)]
         
-        # Add standard arguments
+        # Add output directory (use underscore to match argparse convention)
+        cmd.extend(["--output_dir", str(output_dir)])
+
+        # Add data directory only if the script accepts it
+        if data_dir and script.code and "--data_dir" in script.code:
+            cmd.extend(["--data_dir", str(data_dir)])
+
+        # Auto-build required input args based on script code + patterns
+        if data_dir and script.code:
+            required_args = self._extract_required_args(script.code)
+            for arg in required_args:
+                if arg in ("output_dir", "data_dir"):
+                    continue
+                selected = self._select_args_for_required(arg, script.input_files, data_dir)
+                if selected:
+                    cmd.append(f"--{arg}")
+                    cmd.extend(selected)
+
+        # Add any additional arguments (explicit overrides)
         if input_args:
             cmd.extend(input_args)
-        
-        # Add output directory
-        cmd.extend(["--output-dir", str(output_dir)])
         
         logger.info(f"Executing: {' '.join(cmd)}")
         
@@ -130,11 +202,14 @@ class ScriptExecutor:
             stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
             stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
             
-            # Find output files
+            # Find output files (exclude internal result JSON files)
             output_files = []
             if output_dir.exists():
                 for f in output_dir.iterdir():
                     if f.is_file():
+                        # Skip internal result/metadata JSON files
+                        if f.name.endswith("_result.json"):
+                            continue
                         output_files.append(str(f))
             
             return ExecutionResult(
@@ -195,6 +270,7 @@ class ScriptExecutor:
         scripts: list[GeneratedScript],
         scripts_dir: Path,
         output_dir: Path,
+        data_dir: Path | None = None,
     ) -> list[ExecutionResult]:
         """Execute a list of scripts in order.
         
@@ -202,6 +278,7 @@ class ScriptExecutor:
             scripts: Scripts to execute
             scripts_dir: Directory containing script files
             output_dir: Base output directory
+            data_dir: Directory containing input data files
         
         Returns:
             List of execution results
@@ -232,6 +309,7 @@ class ScriptExecutor:
                 script=script,
                 script_path=script_path,
                 output_dir=script_output_dir,
+                data_dir=data_dir,
             )
             results.append(result)
             
