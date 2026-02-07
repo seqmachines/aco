@@ -245,7 +245,11 @@ export function useUnderstanding() {
       manifestId: string,
       regenerate = false,
       model?: string,
-      apiKey?: string
+      apiKey?: string,
+      options?: {
+        reference_file_paths?: string[]
+        auto_include_detected_scripts?: boolean
+      },
     ): Promise<UnderstandingResponse | null> => {
       setIsLoading(true)
       setError(null)
@@ -259,6 +263,9 @@ export function useUnderstanding() {
             regenerate,
             model,
             api_key: apiKey,
+            reference_file_paths: options?.reference_file_paths ?? [],
+            auto_include_detected_scripts:
+              options?.auto_include_detected_scripts ?? false,
           }),
         })
 
@@ -345,7 +352,9 @@ export function useChat() {
     async (
       manifestId: string,
       step: AppStep,
-      message: string
+      message: string,
+      model?: string,
+      apiKey?: string,
     ): Promise<ChatResponse | null> => {
       setIsLoading(true)
       setError(null)
@@ -358,6 +367,8 @@ export function useChat() {
             manifest_id: manifestId,
             step,
             message,
+            model,
+            api_key: apiKey,
           }),
         })
 

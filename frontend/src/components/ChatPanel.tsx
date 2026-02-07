@@ -6,13 +6,15 @@ import {
   PanelRightClose,
   PanelRight,
   Trash2,
+  RefreshCw,
 } from "lucide-react"
+import ReactMarkdown from "react-markdown"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { useChat } from "@/hooks/useApi"
-import type { AppStep, ChatMessage } from "@/types"
+import type { AppStep, ChatMessage, ScriptPlanChangeSummary } from "@/types"
 
 interface ChatPanelProps {
   manifestId: string | undefined
@@ -20,6 +22,8 @@ interface ChatPanelProps {
   collapsed: boolean
   onToggle: () => void
   onArtifactUpdate?: (step: AppStep, data: Record<string, unknown>) => void
+  model?: string
+  apiKey?: string
 }
 
 const stepLabels: Record<string, string> = {
@@ -33,12 +37,51 @@ const stepLabels: Record<string, string> = {
   approved: "Complete",
 }
 
+function renderChangeSummary(summary: ScriptPlanChangeSummary): string {
+  const lines: string[] = ["### Plan Changes"]
+
+  if (summary.added_scripts.length) {
+    lines.push(`- Added scripts: ${summary.added_scripts.join(", ")}`)
+  }
+  if (summary.removed_scripts.length) {
+    lines.push(`- Removed scripts: ${summary.removed_scripts.join(", ")}`)
+  }
+  if (summary.modified_scripts.length) {
+    const modified = summary.modified_scripts
+      .map((m) => `${m.name} (${m.changed_fields.join(", ")})`)
+      .join(", ")
+    lines.push(`- Modified scripts: ${modified}`)
+  }
+  if (summary.execution_order_changed) {
+    const oldOrder = summary.old_execution_order.length
+      ? summary.old_execution_order.join(" -> ")
+      : "(none)"
+    const newOrder = summary.new_execution_order.length
+      ? summary.new_execution_order.join(" -> ")
+      : "(none)"
+    lines.push(`- Execution order changed: ${oldOrder} => ${newOrder}`)
+  }
+  if (summary.total_estimated_runtime_changed) {
+    const oldRuntime = summary.old_total_estimated_runtime || "(unset)"
+    const newRuntime = summary.new_total_estimated_runtime || "(unset)"
+    lines.push(`- Total estimated runtime changed: ${oldRuntime} => ${newRuntime}`)
+  }
+
+  if (lines.length === 1) {
+    lines.push("- No effective script-level changes detected.")
+  }
+
+  return lines.join("\n")
+}
+
 export function ChatPanel({
   manifestId,
   currentStep,
   collapsed,
   onToggle,
   onArtifactUpdate,
+  model,
+  apiKey,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState("")
@@ -90,7 +133,7 @@ export function ChatPanel({
     setMessages((prev) => [...prev, userMessage])
     setInput("")
 
-    const result = await sendMessage(manifestId, currentStep, userMessage.content)
+    const result = await sendMessage(manifestId, currentStep, userMessage.content, model, apiKey)
 
     if (result) {
       const assistantMessage: ChatMessage = {
@@ -102,6 +145,27 @@ export function ChatPanel({
 
       if (result.artifact_updated && result.updated_data && onArtifactUpdate) {
         onArtifactUpdate(currentStep, result.updated_data)
+        // Add visual notification
+        const artifactLabel = currentStep === "understanding"
+          ? "experiment understanding"
+          : currentStep === "scripts"
+            ? "script plan"
+            : "data"
+        const updateNotice: ChatMessage = {
+          role: "assistant",
+          content: `[Updated the ${artifactLabel}]`,
+          timestamp: new Date().toISOString(),
+        }
+        setMessages((prev) => [...prev, updateNotice])
+
+        if (currentStep === "scripts" && result.change_summary) {
+          const summaryNotice: ChatMessage = {
+            role: "assistant",
+            content: renderChangeSummary(result.change_summary),
+            timestamp: new Date().toISOString(),
+          }
+          setMessages((prev) => [...prev, summaryNotice])
+        }
       }
     } else {
       const errorMessage: ChatMessage = {
@@ -111,7 +175,7 @@ export function ChatPanel({
       }
       setMessages((prev) => [...prev, errorMessage])
     }
-  }, [input, manifestId, currentStep, isLoading, sendMessage, onArtifactUpdate])
+  }, [input, manifestId, currentStep, isLoading, sendMessage, onArtifactUpdate, model, apiKey])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -218,22 +282,41 @@ export function ChatPanel({
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={cn(
-              "text-sm p-2 rounded",
-              msg.role === "user"
-                ? "bg-primary/10 text-foreground ml-6"
-                : "bg-muted text-foreground mr-6"
-            )}
-          >
-            <span className="text-[10px] font-medium text-muted-foreground block mb-0.5">
-              {msg.role === "user" ? "You" : "Acolyte"}
-            </span>
-            <div className="whitespace-pre-wrap text-xs">{msg.content}</div>
-          </div>
-        ))}
+        {messages.map((msg, i) => {
+          const isUpdateNotice = msg.role === "assistant" && msg.content.startsWith("[Updated the ")
+          if (isUpdateNotice) {
+            return (
+              <div key={i} className="flex items-center gap-1.5 justify-center py-1">
+                <RefreshCw className="h-3 w-3 text-primary" />
+                <span className="text-[10px] font-medium text-primary">
+                  {msg.content.slice(1, -1)}
+                </span>
+              </div>
+            )
+          }
+          return (
+            <div
+              key={i}
+              className={cn(
+                "text-sm p-2 rounded",
+                msg.role === "user"
+                  ? "bg-primary/10 text-foreground ml-6"
+                  : "bg-muted text-foreground mr-6"
+              )}
+            >
+              <span className="text-[10px] font-medium text-muted-foreground block mb-0.5">
+                {msg.role === "user" ? "You" : "Acolyte"}
+              </span>
+              {msg.role === "assistant" ? (
+                <div className="text-xs prose prose-xs prose-neutral dark:prose-invert max-w-none overflow-hidden [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_pre]:my-1 [&_pre]:text-[10px] [&_pre]:overflow-x-auto [&_pre]:max-w-full [&_code]:text-[10px] [&_code]:whitespace-pre [&_h1]:text-sm [&_h2]:text-xs [&_h3]:text-xs [&_h4]:text-xs">
+                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+                </div>
+              ) : (
+                <div className="whitespace-pre-wrap text-xs">{msg.content}</div>
+              )}
+            </div>
+          )
+        })}
 
         {isLoading && (
           <div className="flex items-center gap-2 text-muted-foreground mr-6 p-2">

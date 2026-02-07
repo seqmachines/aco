@@ -43,6 +43,11 @@ class ScriptExecutor:
         """
         self.config = config or ExecutionConfig()
     
+    def _strip_extension(self, name: str) -> str:
+        """Strip file extension from script name if present."""
+        p = Path(name)
+        return p.stem if p.suffix else name
+    
     def _get_interpreter(self, script_type: ScriptType) -> list[str]:
         """Get the interpreter command for a script type."""
         if script_type == ScriptType.PYTHON:
@@ -63,15 +68,72 @@ class ScriptExecutor:
             env["PYTHONPATH"] = ""
         return env
 
-    def _extract_required_args(self, code: str) -> list[str]:
-        """Extract required argparse arguments from script code."""
+    def _iter_add_argument_blocks(self, code: str) -> list[str]:
+        """Extract full add_argument(...) blocks from script code."""
+        blocks: list[str] = []
         if not code:
-            return []
-        pattern = re.compile(
-            r"add_argument\(\s*['\"]--(?P<name>[a-zA-Z0-9_]+)['\"][^)]*required=True",
-            re.DOTALL,
-        )
-        return list({match.group("name") for match in pattern.finditer(code)})
+            return blocks
+        keyword = "add_argument("
+        idx = 0
+        length = len(code)
+        while idx < length:
+            start = code.find(keyword, idx)
+            if start == -1:
+                break
+            i = start + len(keyword)
+            depth = 1
+            in_str: str | None = None
+            escape = False
+            while i < length:
+                ch = code[i]
+                if in_str:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == in_str:
+                        in_str = None
+                else:
+                    if ch in ("'", '"'):
+                        in_str = ch
+                    elif ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                        if depth == 0:
+                            blocks.append(code[start:i + 1])
+                            idx = i + 1
+                            break
+                i += 1
+            else:
+                # Unterminated call; stop parsing
+                break
+        return blocks
+
+    def _extract_argparse_args(self, code: str) -> list[dict[str, object]]:
+        """Extract argparse argument definitions from script code.
+
+        Returns list of dicts: {name, required, multiple}
+        """
+        args: list[dict[str, object]] = []
+        if not code:
+            return args
+        blocks = self._iter_add_argument_blocks(code)
+        for block in blocks:
+            # Only consider long options (e.g., --input_files)
+            names = re.findall(r"['\"]--([a-zA-Z0-9_][a-zA-Z0-9_\-]*)['\"]", block)
+            if not names:
+                continue
+            # Prefer the longest option name as the canonical name
+            primary = sorted(set(names), key=len, reverse=True)[0]
+            required = re.search(r"required\s*=\s*True", block) is not None
+            multiple = re.search(r"nargs\s*=\s*['\"][+*]['\"]", block) is not None
+            args.append({
+                "name": primary,
+                "required": required,
+                "multiple": multiple,
+            })
+        return args
 
     def _resolve_input_matches(self, patterns: list[str], data_dir: Path) -> list[str]:
         """Resolve glob patterns relative to data_dir into file paths."""
@@ -93,28 +155,121 @@ class ScriptExecutor:
         arg_name: str,
         patterns: list[str],
         data_dir: Path,
+        prefer_multiple: bool = False,
     ) -> list[str]:
         """Select appropriate input arguments based on arg name and patterns."""
-        if not patterns:
+        lower = arg_name.lower()
+        
+        # Resolve all patterns first (this likely contains a mix of files)
+        matches = self._resolve_input_matches(patterns, data_dir)
+            
+        # Helper to filter by extension
+        def filter_by_ext(files: list[str], exts: list[str]) -> list[str]:
+            return [f for f in files if any(f.lower().endswith(e) for e in exts)]
+
+        # Helper to find any file in data_dir with specific extensions (Smart Discovery)
+        def find_any_by_ext(exts: list[str]) -> list[str]:
+            found = []
+            if data_dir and data_dir.exists():
+                for ext in exts:
+                    # Case-insensitive-ish glob (linux is case sensitive, but we try standard case)
+                    # We can use glob with case-insensitive char classes if needed, but simple glob first
+                    found.extend(glob.glob(str(data_dir / f"*{ext}")))
+                    # Also try uppercase extension just in case
+                    found.extend(glob.glob(str(data_dir / f"*{ext.upper()}")))
+            return sorted(list(set(found))) # Dedup
+
+        # Specific heuristics based on argument name
+        
+        # 1. Excel files
+        if "excel" in lower or "xlsx" in lower:
+            # Strict filtering from matches
+            candidates = filter_by_ext(matches, [".xlsx", ".xls"])
+            if candidates:
+                return candidates[:1]
+            
+            # Smart fallback: look for ANY excel file
+            candidates = find_any_by_ext([".xlsx", ".xls"])
+            if candidates:
+                return candidates[:1]
+            
+            # Strict fail: do not return random files
+            return []
+        
+        # 2. FASTQ files/dirs
+        if "fastq" in lower:
+            target_exts = [".fastq", ".fastq.gz", ".fq", ".fq.gz"]
+            
+            # If asking for directory
+            if lower.endswith("_dir") or "dir" in lower:
+                # Find directory containing fastq files
+                fastq_files = filter_by_ext(matches, target_exts)
+                if not fastq_files:
+                    fastq_files = find_any_by_ext(target_exts)
+                
+                if fastq_files:
+                    # Return the parent dir of the first fastq file
+                    parent = str(Path(fastq_files[0]).parent)
+                    return [parent]
+            else:
+                 candidates = filter_by_ext(matches, target_exts)
+                 if not candidates:
+                     candidates = find_any_by_ext(target_exts)
+                 
+                 if candidates:
+                     return candidates if prefer_multiple else candidates[:1]
+            
+            # Strict fail
             return []
 
-        lower = arg_name.lower()
-        matches = self._resolve_input_matches(patterns, data_dir)
+        # 3. CSV/TSV
+        if "csv" in lower:
+            candidates = filter_by_ext(matches, [".csv"])
+            if not candidates:
+                candidates = find_any_by_ext([".csv"])
+            return candidates[:1] if candidates else []
+            
+        if "tsv" in lower:
+            candidates = filter_by_ext(matches, [".tsv"])
+            if not candidates:
+                candidates = find_any_by_ext([".tsv"])
+            return candidates[:1] if candidates else []
+
+        # 4. Generic directory fallthrough
+        if lower.endswith("_dir") or "dir" in lower:
+            if not matches:
+                # If no matches but we need a dir, maybe data_dir itself?
+                if data_dir:
+                    return [str(data_dir)]
+                return []
+                
+            # Return common parent of whatever matched
+            parents = [str(Path(m).parent) for m in matches]
+            if parents:
+                 return [parents[0]]
+
+        # 5. Fallback: return first match (or all if multiple)
+        # Only reach here if argument type is unknown (no 'excel', 'fastq', etc. in name)
         if not matches:
             return []
-
-        # If argument expects a directory, use the common parent
-        if lower.endswith("_dir") or "dir" in lower:
-            parents = [str(Path(m).parent) for m in matches]
-            common_dir = os.path.commonpath(parents) if parents else None
-            return [common_dir] if common_dir else []
-
-        # If argument expects a single file, pick the first match
-        if any(key in lower for key in ["whitelist", "reference", "ref", "csv", "tsv", "file", "path"]):
-            return [matches[0]]
-
-        # Otherwise pass all matches (works for nargs="+")
-        return matches
+            
+        if prefer_multiple:
+            return matches
+        return matches[:1]
+    
+    def _log_command(self, cmd: list[str], output_dir: Path, script_name: str) -> None:
+        """Write the full command to a log file for debugging."""
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            # User requested cmd.log extension
+            log_path = output_dir / f"{self._strip_extension(script_name)}.cmd.log"
+            with open(log_path, "w") as f:
+                f.write(f"timestamp: {datetime.now().isoformat()}\n")
+                f.write(f"cwd: {self.config.working_directory or os.getcwd()}\n")
+                f.write(f"python: {self.config.python_executable}\n")
+                f.write(f"command:\n  {' '.join(cmd)}\n")
+        except Exception:
+            pass  # Best-effort logging
     
     async def execute_script(
         self,
@@ -145,25 +300,55 @@ class ScriptExecutor:
         # Add output directory (use underscore to match argparse convention)
         cmd.extend(["--output_dir", str(output_dir)])
 
-        # Add data directory only if the script accepts it
-        if data_dir and script.code and "--data_dir" in script.code:
-            cmd.extend(["--data_dir", str(data_dir)])
+        missing_required: list[str] = []
 
-        # Auto-build required input args based on script code + patterns
+        # Auto-build input args based on script code + patterns
         if data_dir and script.code:
-            required_args = self._extract_required_args(script.code)
-            for arg in required_args:
+            arg_defs = self._extract_argparse_args(script.code)
+            arg_names = {a["name"] for a in arg_defs}
+
+            # Add data_dir only if the script defines it
+            if "data_dir" in arg_names:
+                cmd.extend(["--data_dir", str(data_dir)])
+
+            for arg_def in arg_defs:
+                arg = str(arg_def["name"])
                 if arg in ("output_dir", "data_dir"):
                     continue
-                selected = self._select_args_for_required(arg, script.input_files, data_dir)
+                selected = self._select_args_for_required(
+                    arg,
+                    script.input_files,
+                    data_dir,
+                    prefer_multiple=bool(arg_def["multiple"]),
+                )
                 if selected:
                     cmd.append(f"--{arg}")
                     cmd.extend(selected)
+                elif arg_def["required"]:
+                    missing_required.append(arg)
 
-        # Add any additional arguments (explicit overrides)
+        if missing_required:
+            return ExecutionResult(
+                script_name=script.name,
+                success=False,
+                exit_code=-1,
+                stdout="",
+                stderr="",
+                duration_seconds=(datetime.now() - started_at).total_seconds(),
+                started_at=started_at,
+                completed_at=datetime.now(),
+                error_message=(
+                    "Missing required input arguments: "
+                    + ", ".join(missing_required)
+                ),
+            )
+
         if input_args:
             cmd.extend(input_args)
         
+        # Log the command to a file for debugging
+        self._log_command(cmd, output_dir, script.name)
+
         logger.info(f"Executing: {' '.join(cmd)}")
         
         try:
@@ -176,27 +361,9 @@ class ScriptExecutor:
                 env=self._build_environment(),
             )
             
-            # Wait with timeout
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.config.timeout_seconds,
-                )
-                exit_code = process.returncode or 0
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-                return ExecutionResult(
-                    script_name=script.name,
-                    success=False,
-                    exit_code=-1,
-                    stdout="",
-                    stderr="",
-                    duration_seconds=(datetime.now() - started_at).total_seconds(),
-                    started_at=started_at,
-                    completed_at=datetime.now(),
-                    error_message=f"Script timed out after {self.config.timeout_seconds}s",
-                )
+            # Wait for completion (no timeout — let scripts run as long as needed)
+            stdout_bytes, stderr_bytes = await process.communicate()
+            exit_code = process.returncode or 0
             
             completed_at = datetime.now()
             stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
@@ -255,7 +422,8 @@ class ScriptExecutor:
         output_dir.mkdir(parents=True, exist_ok=True)
         
         ext = get_script_extension(script.script_type)
-        script_path = output_dir / f"{script.name}{ext}"
+        base_name = self._strip_extension(script.name)
+        script_path = output_dir / f"{base_name}{ext}"
         
         script_path.write_text(script.code)
         
@@ -290,9 +458,10 @@ class ScriptExecutor:
             script_output_dir = output_dir / script.category.value
             script_output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Get script path
+            # Get script path (strip extension to avoid double .py.py)
             ext = get_script_extension(script.script_type)
-            script_path = scripts_dir / f"{script.name}{ext}"
+            base_name = self._strip_extension(script.name)
+            script_path = scripts_dir / f"{base_name}{ext}"
             
             if not script_path.exists():
                 results.append(ExecutionResult(

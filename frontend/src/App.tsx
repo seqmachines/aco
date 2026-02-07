@@ -3,7 +3,7 @@ import { Dna, Github, Settings as SettingsIcon, Moon, Sun, Check, Circle, Loader
 import { IntakeForm } from "@/components/IntakeForm"
 import { FileScanner } from "@/components/FileScanner"
 import { ManifestViewer } from "@/components/ManifestViewer"
-import { UnderstandingEditor } from "@/components/UnderstandingEditor"
+import { UnderstandingEditor, type UnderstandingGenerateOptions } from "@/components/UnderstandingEditor"
 import { ScriptRunner } from "@/components/ScriptRunner"
 import { NotebookEditor } from "@/components/NotebookEditor"
 import { ReportViewer } from "@/components/ReportViewer"
@@ -85,7 +85,11 @@ function App() {
         const response = await fetch("/scripts/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ manifest_id: manifestId }),
+          body: JSON.stringify({
+            manifest_id: manifestId,
+            model: settings.model || undefined,
+            api_key: settings.apiKey || undefined,
+          }),
         })
         if (response.ok) {
           const data = await response.json()
@@ -97,7 +101,7 @@ function App() {
         setScriptPlanLoading(false)
       }
     },
-    []
+    [settings.model, settings.apiKey]
   )
 
   // Load latest run on startup
@@ -214,7 +218,7 @@ function App() {
     }
   }, [manifest, generateUnderstanding, generateScriptPlan, settings.model, settings.apiKey])
 
-  const handleRegenerate = useCallback(async () => {
+  const handleRegenerate = useCallback(async (options?: UnderstandingGenerateOptions) => {
     if (!manifest) return
 
     setError(null)
@@ -223,7 +227,8 @@ function App() {
       manifest.id,
       true,
       settings.model,
-      settings.apiKey
+      settings.apiKey,
+      options,
     )
     if (result) {
       setUnderstanding(result.understanding)
@@ -262,9 +267,15 @@ function App() {
   }, [clearData])
 
   // Handle artifact updates from chat panel
-  const handleArtifactUpdate = useCallback((_step: AppStep, _data: Record<string, unknown>) => {
-    // Future: when chat handlers return updated artifacts, apply them here.
-    // For now, artifact modifications happen via dedicated endpoints (regenerate, refine).
+  const handleArtifactUpdate = useCallback((step: AppStep, data: Record<string, unknown>) => {
+    if (step === "understanding") {
+      setUnderstanding(data as unknown as ExperimentUnderstanding)
+    } else if (step === "scripts") {
+      // Trust the chat update payload as the freshest plan state.
+      // A follow-up GET can hit stale in-memory cache in another worker and
+      // incorrectly overwrite the just-updated plan in UI.
+      setScriptPlan(data as unknown as ScriptPlan)
+    }
   }, [])
 
   // Handle sidebar navigation
@@ -565,6 +576,8 @@ function App() {
                 manifestId={manifest.id}
                 initialPlan={scriptPlan}
                 understanding={understanding}
+                model={settings.model}
+                apiKey={settings.apiKey}
                 onPlanUpdate={setScriptPlan}
                 onComplete={() => setCurrentStep("notebook")}
                 onBack={() => setCurrentStep("understanding")}
@@ -659,14 +672,18 @@ function App() {
         </footer>
       </div>
 
-      {/* Chat Panel - Right Sidebar */}
-      <ChatPanel
-        manifestId={manifest?.id}
-        currentStep={currentStep}
-        collapsed={chatCollapsed}
-        onToggle={() => setChatCollapsed(!chatCollapsed)}
-        onArtifactUpdate={handleArtifactUpdate}
-      />
+      {/* Chat Panel - Right Sidebar (only on analysis steps) */}
+      {!["intake", "scanning", "manifest"].includes(currentStep) && (
+        <ChatPanel
+          manifestId={manifest?.id}
+          currentStep={currentStep}
+          collapsed={chatCollapsed}
+          onToggle={() => setChatCollapsed(!chatCollapsed)}
+          onArtifactUpdate={handleArtifactUpdate}
+          model={settings.model}
+          apiKey={settings.apiKey}
+        />
+      )}
     </div>
   )
 }

@@ -330,11 +330,29 @@ export interface ChatMessage {
   timestamp: string;
 }
 
+export interface ScriptPlanModifiedItem {
+  name: string;
+  changed_fields: string[];
+}
+
+export interface ScriptPlanChangeSummary {
+  added_scripts: string[];
+  removed_scripts: string[];
+  modified_scripts: ScriptPlanModifiedItem[];
+  execution_order_changed: boolean;
+  old_execution_order: string[];
+  new_execution_order: string[];
+  total_estimated_runtime_changed?: boolean;
+  old_total_estimated_runtime?: string | null;
+  new_total_estimated_runtime?: string | null;
+}
+
 // Chat API response
 export interface ChatResponse {
   response: string;
   artifact_updated: boolean;
   updated_data?: Record<string, unknown>;
+  change_summary?: ScriptPlanChangeSummary;
 }
 
 // Chat history response
@@ -368,6 +386,15 @@ export interface ExecutePipelineResponse {
   execution_results: ExecutionResult[];
   all_succeeded: boolean;
   message: string;
+}
+
+// Existing script info (from /scripts/existing endpoint)
+export interface ExistingScriptInfo {
+  path: string;
+  name: string;
+  size_bytes: number;
+  preview: string;
+  source: "data_dir" | "previous_run";
 }
 
 // Execution result

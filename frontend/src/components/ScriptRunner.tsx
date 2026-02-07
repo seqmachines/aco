@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import {
     Play,
     CheckCircle,
@@ -12,6 +12,9 @@ import {
     Wand2,
     Check,
     Circle,
+    Link2,
+    Trash2,
+    Save,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -23,12 +26,15 @@ import type {
     PipelinePhase,
     ExecutionResult,
     ExperimentUnderstanding,
+    ExistingScriptInfo,
 } from "@/types"
 
 interface ScriptRunnerProps {
     manifestId: string
     initialPlan?: ScriptPlan | null
     understanding?: ExperimentUnderstanding | null
+    model?: string
+    apiKey?: string
     onPlanUpdate?: (plan: ScriptPlan) => void
     onComplete?: (results: ExecutionResult[]) => void
     onBack?: () => void
@@ -58,22 +64,35 @@ const pipelineSteps = [
     { key: "executing", label: "Executing Scripts" },
 ] as const
 
-function PlanScriptCard({ script }: { script: PlannedScript }) {
-    const [expanded, setExpanded] = useState(false)
-    const displayOutputs = script.output_files.filter((file) => {
-        const lower = file.toLowerCase()
-        return !lower.endsWith(".json") && !lower.endsWith(".jsonl") && !lower.endsWith(".ndjson")
-    })
+function PlanScriptCard({
+    script,
+    index,
+    existingScripts,
+    selectedRef,
+    onRefChange,
+    onUpdate,
+    onDelete,
+    readonly,
+}: {
+    script: PlannedScript
+    index: number
+    existingScripts: ExistingScriptInfo[]
+    selectedRef: string | null
+    onRefChange: (scriptName: string, refPath: string | null) => void
+    onUpdate: (index: number, field: keyof PlannedScript, value: string | string[]) => void
+    onDelete: (index: number) => void
+    readonly?: boolean
+}) {
+    const [expanded, setExpanded] = useState(true)
 
     return (
         <div
             className={cn(
-                "p-3 rounded-lg border border-border bg-muted/20 cursor-pointer transition-all",
+                "p-3 rounded-lg border border-border bg-muted/20 transition-all",
                 expanded && "ring-1 ring-border"
             )}
-            onClick={() => setExpanded(!expanded)}
         >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between cursor-pointer" onClick={() => setExpanded(!expanded)}>
                 <div className="flex items-center gap-2">
                     {expanded ? (
                         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -83,32 +102,125 @@ function PlanScriptCard({ script }: { script: PlannedScript }) {
                     <FileCode className="h-3.5 w-3.5 text-primary" />
                     <span className="text-sm font-medium">{script.name}</span>
                 </div>
-                <Badge variant="outline" className={categoryColors[script.category] || ""}>
-                    {categoryLabels[script.category] || script.category}
-                </Badge>
+                <div className="flex items-center gap-2">
+                    {selectedRef && (
+                        <Badge variant="outline" className="text-[10px] bg-primary/10 text-primary border-primary/30">
+                            <Link2 className="h-2.5 w-2.5 mr-1" />
+                            ref
+                        </Badge>
+                    )}
+                    <Badge variant="outline" className={categoryColors[script.category] || ""}>
+                        {categoryLabels[script.category] || script.category}
+                    </Badge>
+                    {!readonly && (
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                onDelete(index)
+                            }}
+                            className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                            title="Remove script"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                </div>
             </div>
-            <p className="text-sm text-muted-foreground mt-1 ml-7">{script.description}</p>
-            {expanded && (
-                <div className="mt-2 ml-7 space-y-1">
-                    {script.dependencies.length > 0 && (
-                        <div>
-                            <span className="text-xs text-muted-foreground">Dependencies: </span>
-                            <span className="text-xs font-mono">{script.dependencies.join(", ")}</span>
-                        </div>
-                    )}
-                    {script.input_files.length > 0 && (
-                        <div>
-                            <span className="text-xs text-muted-foreground">Input patterns: </span>
-                            <span className="text-xs font-mono">{script.input_files.join(", ")}</span>
-                        </div>
-                    )}
-                    {displayOutputs.length > 0 && (
-                        <div>
-                            <span className="text-xs text-muted-foreground">Outputs: </span>
-                            <span className="text-xs font-mono">{displayOutputs.join(", ")}</span>
+
+            {/* Description - always visible */}
+            {expanded ? (
+                <div className="mt-2 ml-7 space-y-2">
+                    {/* Editable description */}
+                    <div>
+                        <label className="text-xs text-muted-foreground block mb-1">Description</label>
+                        <textarea
+                            className="w-full text-sm bg-background border border-border rounded px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary resize-none min-h-[60px]"
+                            value={script.description}
+                            onChange={(e) => onUpdate(index, "description", e.target.value)}
+                            readOnly={readonly}
+                            rows={3}
+                        />
+                    </div>
+
+                    {/* Editable dependencies */}
+                    <div>
+                        <label className="text-xs text-muted-foreground block mb-1">Dependencies (comma-separated)</label>
+                        <input
+                            type="text"
+                            className="w-full text-xs font-mono bg-background border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                            value={script.dependencies.join(", ")}
+                            onChange={(e) =>
+                                onUpdate(
+                                    index,
+                                    "dependencies",
+                                    e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
+                                )
+                            }
+                            readOnly={readonly}
+                        />
+                    </div>
+
+                    {/* Editable input patterns */}
+                    <div>
+                        <label className="text-xs text-muted-foreground block mb-1">Input patterns (comma-separated)</label>
+                        <input
+                            type="text"
+                            className="w-full text-xs font-mono bg-background border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                            value={script.input_files.join(", ")}
+                            onChange={(e) =>
+                                onUpdate(
+                                    index,
+                                    "input_files",
+                                    e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
+                                )
+                            }
+                            readOnly={readonly}
+                        />
+                    </div>
+
+                    {/* Editable outputs */}
+                    <div>
+                        <label className="text-xs text-muted-foreground block mb-1">Output files (comma-separated)</label>
+                        <input
+                            type="text"
+                            className="w-full text-xs font-mono bg-background border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                            value={script.output_files.join(", ")}
+                            onChange={(e) =>
+                                onUpdate(
+                                    index,
+                                    "output_files",
+                                    e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
+                                )
+                            }
+                            readOnly={readonly}
+                        />
+                    </div>
+
+                    {/* Reference script picker */}
+                    {existingScripts.length > 0 && (
+                        <div className="pt-2 border-t border-border/50 mt-2">
+                            <label className="text-xs text-muted-foreground block mb-1">
+                                Reference script (optional):
+                            </label>
+                            <select
+                                className="w-full text-xs bg-background border border-border rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary"
+                                value={selectedRef || ""}
+                                onChange={(e) =>
+                                    onRefChange(script.name, e.target.value || null)
+                                }
+                            >
+                                <option value="">None — generate from scratch</option>
+                                {existingScripts.map((es) => (
+                                    <option key={es.path} value={es.path}>
+                                        {es.name} ({es.source === "data_dir" ? "data" : "prev run"})
+                                    </option>
+                                ))}
+                            </select>
                         </div>
                     )}
                 </div>
+            ) : (
+                <p className="text-sm text-muted-foreground mt-1 ml-7 line-clamp-2">{script.description}</p>
             )}
         </div>
     )
@@ -229,6 +341,14 @@ function ExecutionResultCard({ result }: { result: ExecutionResult }) {
             </div>
             {expanded && (
                 <div className="mt-2 ml-7 space-y-2">
+                    {result.error_message && (
+                        <div>
+                            <span className="text-xs text-destructive">error:</span>
+                            <pre className="p-2 bg-destructive/10 rounded text-xs font-mono overflow-x-auto max-h-32 mt-1">
+                                {result.error_message}
+                            </pre>
+                        </div>
+                    )}
                     {result.stdout && (
                         <div>
                             <span className="text-xs text-muted-foreground">stdout:</span>
@@ -261,7 +381,7 @@ function ExecutionResultCard({ result }: { result: ExecutionResult }) {
     )
 }
 
-export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpdate, onComplete, onBack, onProceed }: ScriptRunnerProps) {
+export function ScriptRunner({ manifestId, initialPlan, understanding, model, apiKey, onPlanUpdate, onComplete, onBack, onProceed }: ScriptRunnerProps) {
     const [plan, setPlan] = useState<ScriptPlan | null>(initialPlan || null)
     const [isGeneratingPlan, setIsGeneratingPlan] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -272,10 +392,101 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
     const [pipelineError, setPipelineError] = useState<string | null>(null)
     const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([])
 
+    // Reference scripts state
+    const [existingScripts, setExistingScripts] = useState<ExistingScriptInfo[]>([])
+    const [referenceScripts, setReferenceScripts] = useState<Record<string, string>>({})
+
+    // Dirty tracking for user edits
+    const [isDirty, setIsDirty] = useState(false)
+    const [isSaving, setIsSaving] = useState(false)
+
+    // Fetch existing scripts for reference picker
+    const fetchExistingScripts = useCallback(async () => {
+        try {
+            const res = await fetch(`/scripts/existing/${manifestId}`)
+            if (res.ok) {
+                const data = await res.json()
+                setExistingScripts(data.scripts || [])
+            }
+        } catch (_e) {
+            // Non-critical; picker will just be empty
+        }
+    }, [manifestId])
+
+    const handleRefChange = useCallback(
+        (scriptName: string, refPath: string | null) => {
+            setReferenceScripts((prev) => {
+                const next = { ...prev }
+                if (refPath) {
+                    next[scriptName] = refPath
+                } else {
+                    delete next[scriptName]
+                }
+                return next
+            })
+        },
+        [],
+    )
+
+    // Handle inline field edits on a script
+    const handleScriptUpdate = useCallback(
+        (index: number, field: keyof PlannedScript, value: string | string[]) => {
+            setPlan((prev) => {
+                if (!prev) return prev
+                const scripts = [...prev.scripts]
+                scripts[index] = { ...scripts[index], [field]: value }
+                return { ...prev, scripts }
+            })
+            setIsDirty(true)
+        },
+        [],
+    )
+
+    // Delete a script from the plan
+    const handleDeleteScript = useCallback(
+        (index: number) => {
+            setPlan((prev) => {
+                if (!prev) return prev
+                const scripts = prev.scripts.filter((_, i) => i !== index)
+                const removedName = prev.scripts[index]?.name
+                const execution_order = prev.execution_order.filter((n) => n !== removedName)
+                return { ...prev, scripts, execution_order }
+            })
+            setIsDirty(true)
+        },
+        [],
+    )
+
+    // Save edited plan to backend
+    const savePlan = useCallback(async () => {
+        if (!plan) return
+        setIsSaving(true)
+        try {
+            const res = await fetch(`/scripts/plan/${manifestId}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ plan: plan }),
+            })
+            if (!res.ok) {
+                const data = await res.json()
+                throw new Error(data.detail || "Failed to save plan")
+            }
+            const data = await res.json()
+            setPlan(data.plan)
+            onPlanUpdate?.(data.plan)
+            setIsDirty(false)
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "Failed to save plan")
+        } finally {
+            setIsSaving(false)
+        }
+    }, [plan, manifestId, onPlanUpdate])
+
     // Sync with parent plan
     useEffect(() => {
         if (initialPlan) {
             setPlan(initialPlan)
+            setIsDirty(false)
         }
     }, [initialPlan])
 
@@ -285,6 +496,11 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
             loadExistingPlan()
         }
     }, [manifestId])
+
+    // Fetch existing scripts on mount
+    useEffect(() => {
+        fetchExistingScripts()
+    }, [fetchExistingScripts])
 
     const loadExistingPlan = async () => {
         try {
@@ -308,7 +524,11 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
             const response = await fetch("/scripts/plan", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ manifest_id: manifestId }),
+                body: JSON.stringify({
+                    manifest_id: manifestId,
+                    model: model || undefined,
+                    api_key: apiKey || undefined,
+                }),
             })
             if (!response.ok) {
                 const data = await response.json()
@@ -317,6 +537,11 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
             const data = await response.json()
             setPlan(data.plan)
             onPlanUpdate?.(data.plan)
+            // Reset pipeline state for a freshly regenerated plan
+            setPipelinePhase("idle")
+            setCompletedPipelineSteps([])
+            setPipelineError(null)
+            setExecutionResults([])
         } catch (e) {
             setError(e instanceof Error ? e.message : "Unknown error")
         } finally {
@@ -327,6 +552,29 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
     const executePipeline = async () => {
         if (!plan) return
 
+        // Auto-save any pending edits (e.g. deleted scripts) before executing
+        if (isDirty) {
+            try {
+                const saveRes = await fetch(`/scripts/plan/${manifestId}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ plan: plan }),
+                })
+                if (!saveRes.ok) {
+                    const data = await saveRes.json()
+                    setError(data.detail || "Failed to save plan before execution")
+                    return
+                }
+                const saveData = await saveRes.json()
+                setPlan(saveData.plan)
+                onPlanUpdate?.(saveData.plan)
+                setIsDirty(false)
+            } catch (e) {
+                setError(e instanceof Error ? e.message : "Failed to save plan before execution")
+                return
+            }
+        }
+
         setPipelinePhase("generating_code")
         setCompletedPipelineSteps([])
         setPipelineError(null)
@@ -334,11 +582,19 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
         setError(null)
 
         try {
-            // Step 1: Generate all code
+            // Step 1: Generate all code (include reference scripts if selected)
+            const codePayload: Record<string, unknown> = {
+                manifest_id: manifestId,
+                model: model || undefined,
+                api_key: apiKey || undefined,
+            }
+            if (Object.keys(referenceScripts).length > 0) {
+                codePayload.reference_script_paths = referenceScripts
+            }
             const codeRes = await fetch("/scripts/generate-all-code", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ manifest_id: manifestId }),
+                body: JSON.stringify(codePayload),
             })
             if (!codeRes.ok) {
                 const data = await codeRes.json()
@@ -418,7 +674,7 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
                     .filter((r: ExecutionResult) => !r.success)
                     .map((r: ExecutionResult) => r.script_name)
                     .join(", ")
-                setPipelineError(`Scripts failed: ${failedScripts}`)
+                setPipelineError(failedScripts ? `Scripts failed: ${failedScripts}` : "Execution failed")
                 sendNotification("Pipeline Failed", "Some scripts failed during execution")
             }
         } catch (e) {
@@ -490,10 +746,25 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
                         Script Plan
                     </h3>
                     <p className="text-sm text-muted-foreground">
-                        {plan.scripts.length} scripts planned — refine below or approve and execute
+                        {plan.scripts.length} scripts planned — edit details below or approve and execute
+                        {isDirty && <span className="text-primary ml-1">(unsaved changes)</span>}
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
+                    {isDirty && pipelinePhase === "idle" && (
+                        <Button
+                            onClick={savePlan}
+                            disabled={isSaving}
+                            size="sm"
+                        >
+                            {isSaving ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                                <Save className="h-3 w-3 mr-1" />
+                            )}
+                            Save Changes
+                        </Button>
+                    )}
                     {pipelinePhase === "idle" && (
                         <Button
                             onClick={generatePlan}
@@ -561,7 +832,17 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, onPlanUpd
             {/* Script Plan Cards */}
             <div className="space-y-2">
                 {plan.scripts.map((script, index) => (
-                    <PlanScriptCard key={`${script.name}-${index}`} script={script} />
+                    <PlanScriptCard
+                        key={`${script.name}-${index}`}
+                        script={script}
+                        index={index}
+                        existingScripts={existingScripts}
+                        selectedRef={referenceScripts[script.name] || null}
+                        onRefChange={handleRefChange}
+                        onUpdate={handleScriptUpdate}
+                        onDelete={handleDeleteScript}
+                        readonly={pipelinePhase !== "idle" && pipelinePhase !== "failed"}
+                    />
                 ))}
             </div>
 

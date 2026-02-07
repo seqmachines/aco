@@ -1,10 +1,13 @@
 """Chat API routes for LLM-powered conversation across all workflow steps."""
 
+import logging
 import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 from aco.engine.chat import (
     ChatMessage,
@@ -40,6 +43,7 @@ class ChatMessageResponse(BaseModel):
     response: str
     artifact_updated: bool = False
     updated_data: dict | None = None
+    change_summary: dict | None = None
 
 
 class ChatHistoryResponse(BaseModel):
@@ -92,7 +96,7 @@ async def send_message(request: ChatMessageRequest):
 
     # Create Gemini client
     api_key = request.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    model = request.model or "gemini-2.5-flash"
+    model = request.model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     try:
         client = GeminiClient(api_key=api_key, model_name=model)
@@ -120,14 +124,15 @@ async def send_message(request: ChatMessageRequest):
     if request.step == "scripts":
         try:
             from aco.api.routes.scripts import _script_plans, load_plan_from_disk
-            plan = _script_plans.get(request.manifest_id) or load_plan_from_disk(request.manifest_id)
+            # Prefer disk to avoid stale per-worker in-memory cache.
+            plan = load_plan_from_disk(request.manifest_id) or _script_plans.get(request.manifest_id)
             if plan:
                 context["plan"] = plan
         except ImportError:
             pass
 
     try:
-        response_text, artifact_updated, updated_data = await handle_chat_message(
+        response_text, artifact_updated, updated_data, change_summary = await handle_chat_message(
             manifest_id=request.manifest_id,
             step=request.step,
             message=request.message,
@@ -137,10 +142,49 @@ async def send_message(request: ChatMessageRequest):
     except Exception as e:
         raise HTTPException(500, f"Chat error: {str(e)}")
 
+    # Persist updated artifacts
+    persistence_error: str | None = None
+    if artifact_updated and updated_data:
+        if request.step == "understanding":
+            try:
+                from aco.engine.models import ExperimentUnderstanding
+                updated_understanding = ExperimentUnderstanding.model_validate(updated_data)
+                understanding_store.save(request.manifest_id, updated_understanding)
+            except Exception as e:
+                logger.error("Failed to persist understanding update: %s", e)
+                persistence_error = "Failed to persist understanding update"
+
+        elif request.step == "scripts":
+            try:
+                from aco.engine.scripts import ScriptPlan
+                from aco.api.routes.scripts import (
+                    _script_plans,
+                    save_plan_to_disk,
+                    save_requirements_txt,
+                )
+                updated_plan = ScriptPlan.model_validate(updated_data)
+                updated_plan.manifest_id = request.manifest_id
+                _script_plans[request.manifest_id] = updated_plan
+                save_plan_to_disk(request.manifest_id, updated_plan)
+                save_requirements_txt(request.manifest_id, updated_plan)
+            except Exception as e:
+                logger.error("Failed to persist script plan update: %s", e)
+                persistence_error = "Failed to persist script plan update"
+
+    if persistence_error:
+        artifact_updated = False
+        updated_data = None
+        change_summary = None
+        response_text = (
+            response_text + "\n\n(Note: I could not save the update. "
+            "Please try again.)"
+        )
+
     return ChatMessageResponse(
         response=response_text,
         artifact_updated=artifact_updated,
         updated_data=updated_data,
+        change_summary=change_summary,
     )
 
 

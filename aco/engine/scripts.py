@@ -4,6 +4,9 @@ This module provides LLM-powered script generation for sequencing QC tasks.
 The LLM generates Python or bash scripts based on experiment understanding.
 """
 
+import hashlib
+import json
+import logging
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -12,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from aco.engine.gemini import GeminiClient, get_gemini_client
 from aco.engine.models import ExperimentUnderstanding
+
+logger = logging.getLogger(__name__)
 
 
 class ScriptType(str, Enum):
@@ -201,6 +206,138 @@ Prioritize essential QC checks over nice-to-haves. Limit to 3-5 scripts maximum.
 """
 
 
+def _plan_signature(plan: ScriptPlan) -> str:
+    """Return a stable semantic signature for comparing script plans."""
+    scripts_data = []
+    for s in plan.scripts:
+        scripts_data.append({
+            "name": s.name,
+            "category": s.category.value if hasattr(s.category, "value") else s.category,
+            "script_type": s.script_type.value if hasattr(s.script_type, "value") else s.script_type,
+            "description": s.description,
+            "dependencies": s.dependencies,
+            "input_files": s.input_files,
+            "output_files": s.output_files,
+            "estimated_runtime": s.estimated_runtime,
+            "requires_approval": s.requires_approval,
+        })
+
+    payload = {
+        "scripts": scripts_data,
+        "execution_order": plan.execution_order,
+        "total_estimated_runtime": plan.total_estimated_runtime,
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def plans_equivalent(plan_a: ScriptPlan, plan_b: ScriptPlan) -> bool:
+    """Return True if two plans are semantically identical."""
+    return _plan_signature(plan_a) == _plan_signature(plan_b)
+
+
+def summarize_plan_changes(
+    old_plan: ScriptPlan,
+    new_plan: ScriptPlan,
+) -> dict[str, Any]:
+    """Summarize script-level and ordering changes between two plans."""
+    old_by_name = {s.name: s for s in old_plan.scripts}
+    new_by_name = {s.name: s for s in new_plan.scripts}
+
+    old_names = set(old_by_name.keys())
+    new_names = set(new_by_name.keys())
+
+    added_scripts = sorted(new_names - old_names)
+    removed_scripts = sorted(old_names - new_names)
+
+    modified_scripts: list[dict[str, Any]] = []
+    common_names = sorted(old_names & new_names)
+    for name in common_names:
+        old_script = old_by_name[name]
+        new_script = new_by_name[name]
+        changed_fields: list[str] = []
+
+        if old_script.category != new_script.category:
+            changed_fields.append("category")
+        if old_script.script_type != new_script.script_type:
+            changed_fields.append("script_type")
+        if old_script.description != new_script.description:
+            changed_fields.append("description")
+        if old_script.dependencies != new_script.dependencies:
+            changed_fields.append("dependencies")
+        if old_script.input_files != new_script.input_files:
+            changed_fields.append("input_files")
+        if old_script.output_files != new_script.output_files:
+            changed_fields.append("output_files")
+        if old_script.estimated_runtime != new_script.estimated_runtime:
+            changed_fields.append("estimated_runtime")
+        if old_script.requires_approval != new_script.requires_approval:
+            changed_fields.append("requires_approval")
+
+        if changed_fields:
+            modified_scripts.append(
+                {"name": name, "changed_fields": changed_fields}
+            )
+
+    execution_order_changed = old_plan.execution_order != new_plan.execution_order
+    total_runtime_changed = (
+        old_plan.total_estimated_runtime != new_plan.total_estimated_runtime
+    )
+
+    return {
+        "added_scripts": added_scripts,
+        "removed_scripts": removed_scripts,
+        "modified_scripts": modified_scripts,
+        "execution_order_changed": execution_order_changed,
+        "old_execution_order": old_plan.execution_order,
+        "new_execution_order": new_plan.execution_order,
+        "total_estimated_runtime_changed": total_runtime_changed,
+        "old_total_estimated_runtime": old_plan.total_estimated_runtime,
+        "new_total_estimated_runtime": new_plan.total_estimated_runtime,
+    }
+
+
+def format_plan_change_summary(change_summary: dict[str, Any]) -> str:
+    """Format a plan-change summary as markdown for chat display."""
+    lines: list[str] = ["### Plan Changes"]
+
+    added = change_summary.get("added_scripts", [])
+    removed = change_summary.get("removed_scripts", [])
+    modified = change_summary.get("modified_scripts", [])
+    order_changed = bool(change_summary.get("execution_order_changed"))
+    runtime_changed = bool(change_summary.get("total_estimated_runtime_changed"))
+
+    if added:
+        lines.append(f"- Added scripts: {', '.join(added)}")
+    if removed:
+        lines.append(f"- Removed scripts: {', '.join(removed)}")
+    if modified:
+        changed_desc = ", ".join(
+            f"{m['name']} ({', '.join(m['changed_fields'])})" for m in modified
+        )
+        lines.append(f"- Modified scripts: {changed_desc}")
+    if order_changed:
+        old_order = change_summary.get("old_execution_order", [])
+        new_order = change_summary.get("new_execution_order", [])
+        lines.append(
+            "- Execution order changed: "
+            f"{' -> '.join(old_order) if old_order else '(none)'} => "
+            f"{' -> '.join(new_order) if new_order else '(none)'}"
+        )
+    if runtime_changed:
+        old_runtime = change_summary.get("old_total_estimated_runtime")
+        new_runtime = change_summary.get("new_total_estimated_runtime")
+        lines.append(
+            f"- Total estimated runtime changed: {old_runtime or '(unset)'} => "
+            f"{new_runtime or '(unset)'}"
+        )
+
+    if len(lines) == 1:
+        lines.append("- No effective script-level changes detected.")
+
+    return "\n".join(lines)
+
+
 SCRIPT_CODE_PROMPT = """Generate the complete code for the following script:
 
 # Script Specification
@@ -241,6 +378,96 @@ IMPORTANT: Output ONLY the script code. Do not include any explanatory text befo
 Start directly with the shebang (#!/usr/bin/env python3) or imports.
 Do not use markdown code blocks - just output the raw script.
 """
+
+
+REFERENCE_SCRIPT_ADDENDUM = """
+
+# Reference Script
+
+An existing script has been uploaded via the Gemini Files API as a reference.
+Use its structure, coding patterns, argument parsing style, and conventions as
+a starting point. Adapt it for the new task described above while preserving
+useful patterns from the reference.
+
+Reference file: {reference_name}
+"""
+
+# Extensions considered as scripts when scanning descriptions
+_SCRIPT_FILENAME_RE_PATTERN = r"""(?:['"`])([A-Za-z0-9_\-]+\.(?:py|R|r|sh|nf|wdl))(?:['"`])"""
+
+
+def detect_referenced_scripts(
+    description: str,
+    search_dirs: list[str] | None = None,
+) -> list[str]:
+    """Parse a script description for mentions of existing script filenames
+    and return the paths of any that are found on disk.
+
+    The function looks for patterns like ``'feature_barcode_detector.py'``
+    or ``"qc_check.R"`` in *description*, then searches *search_dirs*
+    recursively for matching files.
+
+    Args:
+        description: The script description text to scan.
+        search_dirs: Directories to search for the referenced files.
+
+    Returns:
+        List of absolute paths to scripts found on disk.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    if not description or not search_dirs:
+        return []
+
+    # Extract candidate filenames from the description
+    candidates: set[str] = set()
+
+    # Quoted filenames: 'script.py', "script.py", `script.py`
+    for match in re.finditer(_SCRIPT_FILENAME_RE_PATTERN, description):
+        candidates.add(match.group(1))
+
+    # Unquoted filenames with extensions
+    for match in re.finditer(
+        r"\b([A-Za-z0-9_\-]+\.(?:py|R|r|sh))\b", description
+    ):
+        candidates.add(match.group(1))
+
+    if not candidates:
+        return []
+
+    logger.debug(
+        "Detected script references in description: %s", candidates
+    )
+
+    # Search the directories for matching files
+    found: list[str] = []
+    seen: set[str] = set()
+    for dir_path in search_dirs:
+        d = _Path(dir_path)
+        if not d.exists():
+            continue
+        for candidate in candidates:
+            for hit in d.rglob(candidate):
+                # Skip __pycache__, hidden dirs, etc.
+                if any(
+                    part.startswith(".") or part == "__pycache__"
+                    for part in hit.parts
+                ):
+                    continue
+                abs_path = str(hit.resolve())
+                if abs_path not in seen:
+                    seen.add(abs_path)
+                    found.append(abs_path)
+
+    if found:
+        logger.info(
+            "Auto-detected %d reference script(s) from description: %s",
+            len(found),
+            [_Path(p).name for p in found],
+        )
+
+    return found
 
 
 async def generate_script_plan(
@@ -325,6 +552,8 @@ async def generate_script_code(
     understanding: ExperimentUnderstanding,
     output_dir: str,
     client: GeminiClient | None = None,
+    reference_script_path: str | None = None,
+    search_dirs: list[str] | None = None,
 ) -> str:
     """Generate the actual code for a script.
     
@@ -333,6 +562,13 @@ async def generate_script_code(
         understanding: Experiment context
         output_dir: Where outputs should be saved
         client: Optional Gemini client
+        reference_script_path: Optional explicit path to a reference script
+            to upload via the Gemini Files API.
+        search_dirs: Directories to search when auto-detecting referenced
+            scripts from the script description. When provided and no
+            explicit *reference_script_path* is given, the description is
+            parsed for script filenames (e.g. ``'feature_barcode_detector.py'``)
+            and any matches found on disk are uploaded automatically.
     
     Returns:
         The generated script code
@@ -351,14 +587,47 @@ async def generate_script_code(
         output_files="\n".join(f"- {f}" for f in script.output_files),
         dependencies=", ".join(script.dependencies),
     )
-    
-    # For code generation, we want raw text output with higher token limit
-    response = await client.generate_async(
-        prompt=prompt,
-        system_instruction=SCRIPT_GENERATION_SYSTEM,
-        temperature=0.2,  # Lower temp for code
-        max_output_tokens=16384,  # Higher limit for complete scripts
-    )
+
+    from pathlib import Path as _Path
+
+    # Collect reference file paths to upload
+    ref_paths: list[str] = []
+
+    # 1. Explicit reference takes priority
+    if reference_script_path and _Path(reference_script_path).exists():
+        ref_paths.append(reference_script_path)
+
+    # 2. Auto-detect from the script description when no explicit ref
+    if not ref_paths and search_dirs:
+        ref_paths = detect_referenced_scripts(
+            script.description, search_dirs
+        )
+
+    if ref_paths:
+        ref_names = ", ".join(_Path(p).name for p in ref_paths)
+        prompt += REFERENCE_SCRIPT_ADDENDUM.format(reference_name=ref_names)
+        logger.info(
+            "Generating code for %s with %d reference script(s): %s",
+            script.name,
+            len(ref_paths),
+            ref_names,
+        )
+
+        response = await client.generate_with_files_async(
+            prompt=prompt,
+            file_paths=ref_paths,
+            system_instruction=SCRIPT_GENERATION_SYSTEM,
+            temperature=0.2,
+            max_output_tokens=16384,
+        )
+    else:
+        # Standard generation without reference files
+        response = await client.generate_async(
+            prompt=prompt,
+            system_instruction=SCRIPT_GENERATION_SYSTEM,
+            temperature=0.2,  # Lower temp for code
+            max_output_tokens=16384,  # Higher limit for complete scripts
+        )
     
     # Extract code from markdown code blocks
     code = extract_code_from_response(response, script.script_type)
@@ -563,58 +832,63 @@ async def refine_script_plan(
             "output_files": s.output_files,
         })
 
-    import json
     plan_json = json.dumps(plan_data, indent=2)
+    understanding_summary = understanding.summary[:500]
 
-    prompt = REFINE_PLAN_PROMPT.format(
-        plan_json=plan_json,
-        understanding_summary=understanding.summary[:500],
-        feedback=feedback,
-    )
+    async def _run_refine_pass(refinement_feedback: str, temperature: float) -> ScriptPlan:
+        prompt = REFINE_PLAN_PROMPT.format(
+            plan_json=plan_json,
+            understanding_summary=understanding_summary,
+            feedback=refinement_feedback,
+        )
 
-    refined = await client.generate_structured_async(
-        prompt=prompt,
-        response_schema=ScriptPlanSchema,
-        system_instruction=SCRIPT_GENERATION_SYSTEM,
-        temperature=0.3,
-    )
+        refined = await client.generate_structured_async(
+            prompt=prompt,
+            response_schema=ScriptPlanSchema,
+            system_instruction=SCRIPT_GENERATION_SYSTEM,
+            temperature=temperature,
+        )
 
-    # Convert to full ScriptPlan
-    full_scripts = []
-    for s in refined.scripts:
-        full_scripts.append(GeneratedScript(
-            name=s.name,
-            category=s.category,
-            script_type=s.script_type,
-            description=s.description,
-            code="",
-            dependencies=s.dependencies,
-            input_files=s.input_patterns,
-            output_files=s.output_files,
-            estimated_runtime=s.estimated_runtime,
-            requires_approval=s.requires_approval,
-        ))
+        full_scripts = []
+        for s in refined.scripts:
+            full_scripts.append(GeneratedScript(
+                name=s.name,
+                category=s.category,
+                script_type=s.script_type,
+                description=s.description,
+                code="",
+                dependencies=s.dependencies,
+                input_files=s.input_patterns,
+                output_files=s.output_files,
+                estimated_runtime=s.estimated_runtime,
+                requires_approval=s.requires_approval,
+            ))
 
-    updated_plan = ScriptPlan(
-        manifest_id=plan.manifest_id,
-        scripts=full_scripts,
-        execution_order=refined.execution_order,
-        total_estimated_runtime=refined.total_estimated_runtime,
-    )
+        return ScriptPlan(
+            manifest_id=plan.manifest_id,
+            scripts=full_scripts,
+            execution_order=refined.execution_order,
+            total_estimated_runtime=refined.total_estimated_runtime,
+        )
 
-    # Build a summary message of changes
-    old_names = {s.name for s in plan.scripts}
-    new_names = {s.name for s in updated_plan.scripts}
-    added = new_names - old_names
-    removed = old_names - new_names
+    updated_plan = await _run_refine_pass(feedback, temperature=0.3)
 
-    parts = [f"Plan updated to {len(updated_plan.scripts)} scripts."]
-    if added:
-        parts.append(f"Added: {', '.join(added)}.")
-    if removed:
-        parts.append(f"Removed: {', '.join(removed)}.")
+    # If refinement returns the same plan, run a forced retry that must apply edits.
+    if plans_equivalent(plan, updated_plan):
+        forced_feedback = (
+            f"{feedback}\n\n"
+            "IMPORTANT: Your previous output made no effective changes to the plan. "
+            "Apply the user's request with concrete edits (add/remove/rename scripts, "
+            "or update script descriptions/dependencies/inputs/outputs/execution order). "
+            "Do not return a no-op plan."
+        )
+        updated_plan = await _run_refine_pass(forced_feedback, temperature=0.4)
 
-    return updated_plan, " ".join(parts)
+    if plans_equivalent(plan, updated_plan):
+        return plan, "No effective plan changes were applied from this feedback."
+
+    change_summary = summarize_plan_changes(plan, updated_plan)
+    return updated_plan, format_plan_change_summary(change_summary)
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,11 @@
 """Prompt templates and extraction logic for experiment understanding."""
 
+import logging
 from datetime import datetime
 
 from aco.engine.gemini import GeminiClient, get_gemini_client
+
+logger = logging.getLogger(__name__)
 from aco.engine.models import (
     AssayPlatform,
     AssayStructure,
@@ -74,15 +77,52 @@ Based on the manifest above, provide:
 Be specific and reference actual files and metadata from the manifest in your analysis."""
 
 
-def build_understanding_prompt(manifest: Manifest) -> str:
-    """Build the prompt for experiment understanding from a manifest."""
+REFERENCE_FILES_ADDENDUM = """
+
+# Attached Reference Files
+
+The following files have been uploaded for your review via the Gemini Files API.
+Analyze their contents to better understand previous processing, experimental
+protocols, or relevant context. Use details from these files (e.g. barcode
+whitelists, argument parsers, processing logic) to produce a more accurate
+understanding of the experiment.
+
+Uploaded files: {file_names}
+"""
+
+
+def build_understanding_prompt(
+    manifest: Manifest,
+    reference_file_paths: list[str] | None = None,
+) -> str:
+    """Build the prompt for experiment understanding from a manifest.
+
+    Args:
+        manifest: The experiment manifest.
+        reference_file_paths: Optional list of file paths that will be
+            uploaded alongside the prompt. When provided, an extra
+            instruction block is appended so the model knows to inspect
+            them.
+
+    Returns:
+        The formatted prompt string.
+    """
     manifest_content = manifest.to_llm_context()
-    return UNDERSTANDING_PROMPT_TEMPLATE.format(manifest_content=manifest_content)
+    prompt = UNDERSTANDING_PROMPT_TEMPLATE.format(manifest_content=manifest_content)
+
+    if reference_file_paths:
+        from pathlib import Path
+
+        names = ", ".join(Path(p).name for p in reference_file_paths)
+        prompt += REFERENCE_FILES_ADDENDUM.format(file_names=names)
+
+    return prompt
 
 
 def generate_understanding(
     manifest: Manifest,
     client: GeminiClient | None = None,
+    reference_file_paths: list[str] | None = None,
 ) -> ExperimentUnderstanding:
     """
     Generate experiment understanding from a manifest using Gemini.
@@ -90,6 +130,8 @@ def generate_understanding(
     Args:
         manifest: The manifest to analyze
         client: Optional Gemini client (uses singleton if not provided)
+        reference_file_paths: Optional list of local file paths to upload
+            via the Gemini Files API for richer context.
     
     Returns:
         ExperimentUnderstanding with inferred experiment details
@@ -97,14 +139,29 @@ def generate_understanding(
     if client is None:
         client = get_gemini_client()
     
-    prompt = build_understanding_prompt(manifest)
-    
-    understanding = client.generate_structured(
-        prompt=prompt,
-        response_schema=ExperimentUnderstanding,
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.3,  # Lower temperature for more consistent structured output
-    )
+    prompt = build_understanding_prompt(manifest, reference_file_paths)
+
+    # Filter to files that actually exist
+    valid_paths = _filter_existing_paths(reference_file_paths)
+
+    if valid_paths:
+        logger.info(
+            "Generating understanding with %d reference file(s)", len(valid_paths)
+        )
+        understanding = client.generate_structured_with_files(
+            prompt=prompt,
+            file_paths=valid_paths,
+            response_schema=ExperimentUnderstanding,
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.3,
+        )
+    else:
+        understanding = client.generate_structured(
+            prompt=prompt,
+            response_schema=ExperimentUnderstanding,
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.3,
+        )
     
     # Add metadata
     understanding.model_used = client.model_name
@@ -116,25 +173,60 @@ def generate_understanding(
 async def generate_understanding_async(
     manifest: Manifest,
     client: GeminiClient | None = None,
+    reference_file_paths: list[str] | None = None,
 ) -> ExperimentUnderstanding:
-    """Async version of generate_understanding."""
+    """Async version of generate_understanding.
+
+    Args:
+        manifest: The manifest to analyze.
+        client: Optional Gemini client.
+        reference_file_paths: Optional file paths to upload for context.
+    """
     if client is None:
         client = get_gemini_client()
     
-    prompt = build_understanding_prompt(manifest)
-    
-    understanding = await client.generate_structured_async(
-        prompt=prompt,
-        response_schema=ExperimentUnderstanding,
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.3,
-    )
+    prompt = build_understanding_prompt(manifest, reference_file_paths)
+
+    valid_paths = _filter_existing_paths(reference_file_paths)
+
+    if valid_paths:
+        logger.info(
+            "Generating understanding (async) with %d reference file(s)",
+            len(valid_paths),
+        )
+        understanding = await client.generate_structured_with_files_async(
+            prompt=prompt,
+            file_paths=valid_paths,
+            response_schema=ExperimentUnderstanding,
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.3,
+        )
+    else:
+        understanding = await client.generate_structured_async(
+            prompt=prompt,
+            response_schema=ExperimentUnderstanding,
+            system_instruction=SYSTEM_INSTRUCTION,
+            temperature=0.3,
+        )
     
     # Add metadata
     understanding.model_used = client.model_name
     understanding.generated_at = datetime.now()
     
     return understanding
+
+
+def _filter_existing_paths(paths: list[str] | None) -> list[str]:
+    """Return only paths that exist on disk."""
+    if not paths:
+        return []
+    from pathlib import Path
+
+    valid = [p for p in paths if Path(p).exists()]
+    skipped = len(paths) - len(valid)
+    if skipped:
+        logger.warning("Skipped %d non-existent reference file(s)", skipped)
+    return valid
 
 
 def approve_understanding(

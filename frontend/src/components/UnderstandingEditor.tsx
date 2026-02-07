@@ -14,6 +14,7 @@ import {
   ChevronRight,
   X,
   Code,
+  FileUp,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -24,10 +25,15 @@ import { Spinner } from "@/components/ui/spinner"
 import { ReadStructureVisualizer } from "@/components/ReadStructureVisualizer"
 import type { ExperimentUnderstanding, QualityConcern, RecommendedCheck } from "@/types"
 
+export interface UnderstandingGenerateOptions {
+  auto_include_detected_scripts?: boolean
+  reference_file_paths?: string[]
+}
+
 interface UnderstandingEditorProps {
   understanding: ExperimentUnderstanding | null
   isLoading: boolean
-  onRegenerate: () => void
+  onRegenerate: (options?: UnderstandingGenerateOptions) => void
   onApprove: (edits?: Record<string, string>) => void
 }
 
@@ -137,6 +143,7 @@ export function UnderstandingEditor({
   const [isEditing, setIsEditing] = useState(false)
   const [editedSummary, setEditedSummary] = useState("")
   const [editedAssayName, setEditedAssayName] = useState("")
+  const [includeScripts, setIncludeScripts] = useState(false)
 
   if (isLoading) {
     return (
@@ -432,10 +439,32 @@ export function UnderstandingEditor({
 
       {/* Actions */}
       <div className="flex justify-between items-center pt-4 border-t border-border">
-        <Button variant="outline" onClick={onRegenerate} disabled={isLoading}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Regenerate
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            onClick={() =>
+              onRegenerate(
+                includeScripts
+                  ? { auto_include_detected_scripts: true }
+                  : undefined,
+              )
+            }
+            disabled={isLoading}
+          >
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Regenerate
+          </Button>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={includeScripts}
+              onChange={(e) => setIncludeScripts(e.target.checked)}
+              className="rounded border-border"
+            />
+            <FileUp className="h-3 w-3" />
+            Include detected scripts
+          </label>
+        </div>
 
         <div className="flex items-center gap-2">
           {isEditing ? (
