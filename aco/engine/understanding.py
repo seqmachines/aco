@@ -50,11 +50,18 @@ Based on the manifest above, provide:
 3. **Read Structure** (CRITICAL for sequencing runs):
    - Identify the barcode and UMI structure for each read
    - For each segment, specify: name, type (barcode/umi/insert/linker/polyT/index), start position, end position, length
-   - Common structures:
+   - Set `library_type` for each read structure: "gex", "cite_seq", "adt", "hto", "atac", "vdj_t", "vdj_b", "crispr", or "custom"
+   - Common GEX structures:
      - 10x Chromium 3' v3: R1=28bp (16bp cell barcode + 12bp UMI), R2=91bp (insert)
      - 10x Chromium 5': R1=26bp (16bp CB + 10bp UMI), R2=insert
      - Parse Biosciences: Multiple rounds of barcoding
-   - Include confidence level and detection reasoning
+   - **Multi-modal experiments**: If CITE-seq / ADT / HTO / ATAC / VDJ data is detected:
+     - The primary `read_structure` should be the GEX library (library_type="gex")
+     - Put each additional library in `additional_read_structures` with its own `library_type`
+     - CITE-seq / ADT example: R1=28bp (16bp cell barcode + 12bp UMI), R2=15bp (antibody barcode)
+     - HTO example: R1=28bp (16bp cell barcode + 12bp UMI), R2=15bp (hashtag barcode)
+     - ATAC example: different barcode position scheme from GEX
+   - Include confidence level and detection reasoning for each structure
 
 4. **Sample Structure**: Identify the samples, their relationships, and any experimental conditions
 

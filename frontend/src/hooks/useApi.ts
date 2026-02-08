@@ -9,7 +9,6 @@ import type {
   IntakeFormData,
   ChatResponse,
   ChatMessage,
-  AppStep,
 } from "@/types"
 
 // In production, API is served from same origin. In dev, proxy handles /api -> :8000
@@ -351,7 +350,7 @@ export function useChat() {
   const sendMessage = useCallback(
     async (
       manifestId: string,
-      step: AppStep,
+      step: string,
       message: string,
       model?: string,
       apiKey?: string,
@@ -386,7 +385,7 @@ export function useChat() {
   )
 
   const getHistory = useCallback(
-    async (manifestId: string, step: AppStep): Promise<ChatMessage[]> => {
+    async (manifestId: string, step: string): Promise<ChatMessage[]> => {
       try {
         const response = await fetch(
           `${API_BASE}/chat/history/${manifestId}/${step}`
@@ -404,7 +403,7 @@ export function useChat() {
   )
 
   const clearHistory = useCallback(
-    async (manifestId: string, step: AppStep): Promise<void> => {
+    async (manifestId: string, step: string): Promise<void> => {
       try {
         await fetch(`${API_BASE}/chat/history/${manifestId}/${step}`, {
           method: "DELETE",

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from aco.api.routes import (
+    analyze_router,
     chat_router,
     intake_router,
     manifest_router,
@@ -20,6 +21,7 @@ from aco.api.routes import (
     scripts_router,
     understanding_router,
 )
+from aco.api.routes.analyze import set_stores as set_analyze_stores
 from aco.api.routes.chat import set_stores as set_chat_stores
 from aco.api.routes.intake import set_store as set_intake_store
 from aco.api.routes.manifest import set_store as set_manifest_store
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI):
     understanding_store = UnderstandingStore(str(storage_dir / "understandings"))
     
     # Set stores on routers
+    set_analyze_stores(manifest_store, understanding_store)
     set_chat_stores(manifest_store, understanding_store)
     set_intake_store(manifest_store)
     set_manifest_store(manifest_store)
@@ -106,7 +109,7 @@ async def lifespan(app: FastAPI):
     if cli_url:
         from rich.console import Console
         from rich.panel import Panel
-        
+
         console = Console()
         console.print()
         console.print(
@@ -150,6 +153,7 @@ def create_app() -> FastAPI:
     )
     
     # Include API routers
+    app.include_router(analyze_router)
     app.include_router(chat_router)
     app.include_router(intake_router)
     app.include_router(scan_router)

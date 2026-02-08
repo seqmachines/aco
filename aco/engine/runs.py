@@ -22,10 +22,25 @@ class RunConfig(BaseModel):
     status: str = Field(default="initialized", description="Current run status")
     current_stage: str = Field(default="00_manifest", description="Current processing stage")
     notebook_type: str = Field(default="python", description="python or r")
+    version: int = Field(default=2, description="Run config schema version (2 = three-phase)")
 
 
-# Standard folder structure
+# Standard folder structure -- three-phase layout (v2)
 STAGE_FOLDERS = [
+    "01_understand/describe",
+    "01_understand/scan",
+    "01_understand/understanding",
+    "02_analyze/hypothesis",
+    "02_analyze/references",
+    "02_analyze/strategy",
+    "02_analyze/results",
+    "03_summarize/plots",
+    "03_summarize/notebook",
+    "03_summarize/report",
+]
+
+# Legacy folder names kept for backward compat with v1 runs
+LEGACY_STAGE_FOLDERS = [
     "00_manifest",
     "01_understanding",
     "02_parse_assay",
@@ -87,7 +102,10 @@ class RunManager:
             stage_dir.mkdir(exist_ok=True)
         
         # Create figures subfolder in notebook
-        (self.run_dir / "05_notebook" / "figures").mkdir(exist_ok=True)
+        (self.run_dir / "03_summarize" / "notebook" / "figures").mkdir(parents=True, exist_ok=True)
+        
+        # Also create a scripts/ dir at the run level for generated code
+        (self.run_dir / "scripts").mkdir(exist_ok=True)
         
         # Save initial config
         self._save_config()

@@ -4,8 +4,23 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import type { ReadStructure, ReadSegment } from "@/types"
 
+// Human-readable labels for library types
+const libraryTypeLabels: Record<string, string> = {
+    gex: "Gene Expression (GEX)",
+    cite_seq: "CITE-seq",
+    adt: "Antibody-Derived Tags (ADT)",
+    hto: "Hashtag Oligos (HTO)",
+    atac: "ATAC",
+    vdj_t: "VDJ-T (TCR)",
+    vdj_b: "VDJ-B (BCR)",
+    crispr: "CRISPR Guide Capture",
+    custom: "Custom",
+}
+
 interface ReadStructureVisualizerProps {
     readStructure: ReadStructure | null
+    /** Optional title override. Defaults to "Read Structure". */
+    title?: string
     className?: string
 }
 
@@ -32,6 +47,7 @@ const segmentLabels: Record<string, string> = {
 
 export function ReadStructureVisualizer({
     readStructure,
+    title,
     className,
 }: ReadStructureVisualizerProps) {
     const [animationStep, setAnimationStep] = useState(0)
@@ -69,6 +85,12 @@ export function ReadStructureVisualizer({
         )
     }
 
+    // Derive a display title
+    const libLabel = readStructure.library_type
+        ? libraryTypeLabels[readStructure.library_type] || readStructure.library_type.toUpperCase()
+        : null
+    const displayTitle = title || (libLabel ? `Read Structure — ${libLabel}` : "Read Structure")
+
     // Group segments by read number
     const segmentsByRead: Record<number, ReadSegment[]> = {}
     readStructure.segments.forEach((seg) => {
@@ -94,10 +116,22 @@ export function ReadStructureVisualizer({
         <Card className={cn("", className)}>
             <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                    <CardTitle className="text-lg">Read Structure</CardTitle>
-                    <Badge variant="outline" className="text-xs">
-                        {Math.round(readStructure.confidence * 100)}% confidence
-                    </Badge>
+                    <CardTitle className="text-lg">{displayTitle}</CardTitle>
+                    <div className="flex items-center gap-2">
+                        {readStructure.library_type && readStructure.library_type !== "gex" && (
+                            <Badge className="text-xs bg-teal-500/20 text-teal-600 border-teal-500/30">
+                                {libLabel}
+                            </Badge>
+                        )}
+                        <Badge variant="outline" className="text-xs">
+                            {Math.round(readStructure.confidence * 100)}% confidence
+                        </Badge>
+                        {readStructure.read1_length && (
+                            <Badge variant="outline" className="text-xs bg-muted/50">
+                                {readStructure.read1_length}bp structure
+                            </Badge>
+                        )}
+                    </div>
                 </div>
                 <p className="text-muted-foreground text-sm">
                     {readStructure.assay_name}

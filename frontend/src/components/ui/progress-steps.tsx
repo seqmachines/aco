@@ -1,37 +1,26 @@
 import { cn } from "@/lib/utils"
 import { Check } from "lucide-react"
 import type { AppStep } from "@/types"
-
-interface Step {
-  id: AppStep
-  name: string
-  description: string
-}
-
-const steps: Step[] = [
-  { id: "intake", name: "Intake", description: "Describe your experiment" },
-  { id: "scanning", name: "Scanning", description: "Discovering files" },
-  { id: "manifest", name: "Run Review", description: "Review run data" },
-  { id: "understanding", name: "Analysis", description: "LLM processing" },
-  { id: "approved", name: "Complete", description: "Ready for QC" },
-]
+import { PHASES, phaseForStep } from "@/types"
 
 interface ProgressStepsProps {
   currentStep: AppStep
 }
 
 export function ProgressSteps({ currentStep }: ProgressStepsProps) {
-  const currentIndex = steps.findIndex((s) => s.id === currentStep)
+  const currentPhase = phaseForStep(currentStep)
+  const phaseIds = PHASES.map((p) => p.id)
+  const currentPhaseIdx = phaseIds.indexOf(currentPhase)
 
   return (
     <nav aria-label="Progress" className="w-full">
       <ol className="flex items-center justify-between">
-        {steps.map((step, index) => {
-          const isComplete = index < currentIndex
-          const isCurrent = index === currentIndex
+        {PHASES.map((phase, index) => {
+          const isComplete = index < currentPhaseIdx
+          const isCurrent = index === currentPhaseIdx
 
           return (
-            <li key={step.id} className="relative flex flex-1 flex-col items-center">
+            <li key={phase.id} className="relative flex flex-1 flex-col items-center">
               {/* Connector line */}
               {index !== 0 && (
                 <div
@@ -41,7 +30,7 @@ export function ProgressSteps({ currentStep }: ProgressStepsProps) {
                   )}
                 />
               )}
-              {index !== steps.length - 1 && (
+              {index !== PHASES.length - 1 && (
                 <div
                   className={cn(
                     "absolute left-1/2 right-0 top-4 h-0.5 -translate-y-1/2",
@@ -50,7 +39,7 @@ export function ProgressSteps({ currentStep }: ProgressStepsProps) {
                 />
               )}
 
-              {/* Step indicator */}
+              {/* Phase indicator */}
               <div
                 className={cn(
                   "relative z-10 flex h-8 w-8 items-center justify-center rounded-full border-2 transition-all duration-300",
@@ -68,7 +57,7 @@ export function ProgressSteps({ currentStep }: ProgressStepsProps) {
                 )}
               </div>
 
-              {/* Step label */}
+              {/* Phase label */}
               <div className="mt-2 text-center">
                 <p
                   className={cn(
@@ -76,10 +65,7 @@ export function ProgressSteps({ currentStep }: ProgressStepsProps) {
                     isCurrent ? "text-primary" : isComplete ? "text-foreground" : "text-muted-foreground"
                   )}
                 >
-                  {step.name}
-                </p>
-                <p className="text-xs text-muted-foreground hidden sm:block">
-                  {step.description}
+                  {phase.label}
                 </p>
               </div>
             </li>

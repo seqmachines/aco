@@ -180,9 +180,22 @@ export interface ReadSegment {
   whitelist_file: string | null;
 }
 
+// Library types for multimodal experiments
+export type LibraryType =
+  | "gex"
+  | "cite_seq"
+  | "adt"
+  | "hto"
+  | "atac"
+  | "vdj_t"
+  | "vdj_b"
+  | "crispr"
+  | "custom";
+
 // Read structure definition
 export interface ReadStructure {
   assay_name: string;
+  library_type: LibraryType;
   total_reads: number;
   read1_length: number | null;
   read2_length: number | null;
@@ -213,6 +226,7 @@ export interface ExperimentUnderstanding {
   assay_platform: AssayPlatform;
   assay_structure: AssayStructure | null;
   read_structure: ReadStructure | null;
+  additional_read_structures: ReadStructure[];
   detected_scripts: DetectedScript[];
   sample_count: number;
   samples: SampleInfo[];
@@ -262,9 +276,97 @@ export interface ApprovalResponse {
   message: string;
 }
 
-// App state types
-export type AppStep = "intake" | "scanning" | "manifest" | "understanding" | "scripts" | "notebook" | "report" | "approved";
+// ---------------------------------------------------------------------------
+// Workflow phases & steps
+// ---------------------------------------------------------------------------
 
+/** Top-level workflow phases */
+export type Phase = "understand" | "analyze" | "summarize";
+
+/** Sub-steps within each phase */
+export type UnderstandStep = "describe" | "scan" | "understanding";
+export type AnalyzeStep = "hypothesis" | "strategy" | "execute";
+export type SummarizeStep = "plots" | "notebook" | "report" | "optimize";
+
+/** Flat union of every possible step (used as the primary navigation key) */
+export type AppStep = UnderstandStep | AnalyzeStep | SummarizeStep;
+
+/** Describes a single sub-step in the sidebar / progress bar */
+export interface StepDefinition {
+  id: AppStep;
+  label: string;
+  shortLabel: string;
+}
+
+/** Describes a top-level phase containing ordered sub-steps */
+export interface PhaseDefinition {
+  id: Phase;
+  label: string;
+  shortLabel: string;
+  steps: StepDefinition[];
+}
+
+/** Canonical phase & step ordering used by the sidebar and progress bar */
+export const PHASES: PhaseDefinition[] = [
+  {
+    id: "understand",
+    label: "Understand",
+    shortLabel: "Understand",
+    steps: [
+      { id: "describe", label: "Describe Your Experiment", shortLabel: "Describe" },
+      { id: "scan", label: "Scan & Index Files", shortLabel: "Scan" },
+      { id: "understanding", label: "Experiment Understanding", shortLabel: "Understanding" },
+    ],
+  },
+  {
+    id: "analyze",
+    label: "Analyze",
+    shortLabel: "Analyze",
+    steps: [
+      { id: "hypothesis", label: "Reference", shortLabel: "Reference" },
+      { id: "strategy", label: "Analysis Strategy", shortLabel: "Strategy" },
+      { id: "execute", label: "Execute Plan", shortLabel: "Execute" },
+    ],
+  },
+  {
+    id: "summarize",
+    label: "Summarize",
+    shortLabel: "Summarize",
+    steps: [
+      { id: "plots", label: "Choose Plots & Tests", shortLabel: "Plots" },
+      { id: "notebook", label: "Analysis Notebook", shortLabel: "Notebook" },
+      { id: "report", label: "Export Report", shortLabel: "Report" },
+      { id: "optimize", label: "Optimize & Chat", shortLabel: "Optimize" },
+    ],
+  },
+];
+
+/** Flat ordered list of all steps (derived from PHASES) */
+export const ALL_STEPS: AppStep[] = PHASES.flatMap((p) => p.steps.map((s) => s.id));
+
+/** Look up which phase a step belongs to */
+export function phaseForStep(step: AppStep): Phase {
+  for (const phase of PHASES) {
+    if (phase.steps.some((s) => s.id === step)) return phase.id;
+  }
+  return "understand";
+}
+
+/** Get the flat index of a step across all phases */
+export function stepIndex(step: AppStep): number {
+  return ALL_STEPS.indexOf(step);
+}
+
+/** Get the StepDefinition for a given step id */
+export function stepDef(step: AppStep): StepDefinition | undefined {
+  for (const phase of PHASES) {
+    const found = phase.steps.find((s) => s.id === step);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+// App state types
 export interface AppState {
   currentStep: AppStep;
   manifest: Manifest | null;
@@ -319,6 +421,7 @@ export interface ScriptPlan {
   scripts: PlannedScript[];
   execution_order: string[];
   total_estimated_runtime: string | null;
+  usage_instructions: string | null;
   generated_at: string;
   is_approved: boolean;
 }
@@ -386,6 +489,87 @@ export interface ExecutePipelineResponse {
   execution_results: ExecutionResult[];
   all_succeeded: boolean;
   message: string;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Analyze types
+// ---------------------------------------------------------------------------
+
+export interface UserHypothesis {
+  text: string;
+  priority: "high" | "medium" | "low";
+  rationale: string | null;
+}
+
+export interface HypothesisSet {
+  manifest_id: string;
+  what_is_wrong: string;
+  what_to_prove: string;
+  hypotheses: UserHypothesis[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SelectedReference {
+  path: string;
+  name: string;
+  ref_type: "script" | "prior_run" | "protocol";
+  description: string;
+}
+
+export interface HypothesisTest {
+  hypothesis: string;
+  test_method: string;
+  expected_outcome: string;
+  required_data: string[];
+}
+
+export interface GateCheckItem {
+  gate_name: string;
+  description: string;
+  pass_criteria: string;
+  fail_criteria: string;
+  module_name: string | null;
+  priority: string;
+}
+
+export interface ExecutionStepDef {
+  name: string;
+  description: string;
+  tool_or_module: string;
+  depends_on: string[];
+  is_deterministic: boolean;
+  estimated_runtime: string | null;
+}
+
+export interface ScriptInsight {
+  script_path: string;
+  intent: string;
+  parameters: Record<string, string>;
+  adaptation_notes: string[];
+}
+
+export interface AnalysisStrategy {
+  manifest_id: string;
+  hypotheses_to_test: HypothesisTest[];
+  gate_checklist: GateCheckItem[];
+  required_modules: string[];
+  required_tools: string[];
+  execution_plan: ExecutionStepDef[];
+  script_insights: ScriptInsight[];
+  summary: string;
+  user_approach: string | null;
+  generated_at: string;
+  model_used: string | null;
+  is_approved: boolean;
+}
+
+export interface PlotSelection {
+  manifest_id: string;
+  selected_plots: string[];
+  custom_plot_requests: string;
+  selected_tests: string[];
+  created_at: string;
 }
 
 // Existing script info (from /scripts/existing endpoint)

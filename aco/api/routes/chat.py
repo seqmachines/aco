@@ -85,7 +85,14 @@ def get_understanding_store() -> UnderstandingStore:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-VALID_STEPS = {"intake", "scanning", "manifest", "understanding", "scripts", "notebook", "report"}
+VALID_STEPS = {
+    # New three-phase step names
+    "describe", "scan", "understanding",
+    "hypothesis", "references", "strategy", "execute",
+    "plots", "notebook", "report", "optimize",
+    # Legacy names (backward compat)
+    "intake", "scanning", "manifest", "scripts",
+}
 
 
 @router.post("/message", response_model=ChatMessageResponse)
@@ -115,13 +122,13 @@ async def send_message(request: ChatMessageRequest):
         context["manifest"] = manifest
 
     # Load understanding for relevant steps
-    if request.step in ("understanding", "scripts", "notebook", "report"):
+    if request.step in ("understanding", "strategy", "execute", "plots", "notebook", "report", "optimize", "scripts", "hypothesis", "references"):
         understanding = understanding_store.load(request.manifest_id)
         if understanding:
             context["understanding"] = understanding
 
-    # Load script plan for scripts step
-    if request.step == "scripts":
+    # Load script plan for execute / scripts step
+    if request.step in ("execute", "scripts"):
         try:
             from aco.api.routes.scripts import _script_plans, load_plan_from_disk
             # Prefer disk to avoid stale per-worker in-memory cache.
@@ -154,7 +161,7 @@ async def send_message(request: ChatMessageRequest):
                 logger.error("Failed to persist understanding update: %s", e)
                 persistence_error = "Failed to persist understanding update"
 
-        elif request.step == "scripts":
+        elif request.step in ("execute", "scripts"):
             try:
                 from aco.engine.scripts import ScriptPlan
                 from aco.api.routes.scripts import (

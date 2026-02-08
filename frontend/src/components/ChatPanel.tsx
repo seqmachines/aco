@@ -27,14 +27,17 @@ interface ChatPanelProps {
 }
 
 const stepLabels: Record<string, string> = {
-  intake: "Experiment Setup",
-  scanning: "File Scanning",
-  manifest: "Run Data Review",
-  understanding: "Analysis & Plan",
-  scripts: "Script Planning",
+  describe: "Experiment Setup",
+  scan: "File Scanning & Review",
+  understanding: "Experiment Understanding",
+  hypothesis: "Hypothesis & Goals",
+  references: "Reference Selection",
+  strategy: "Analysis Strategy",
+  execute: "Script Execution",
+  plots: "Plot Selection",
   notebook: "Notebook",
   report: "QC Report",
-  approved: "Complete",
+  optimize: "Optimization",
 }
 
 function renderChangeSummary(summary: ScriptPlanChangeSummary): string {
@@ -86,7 +89,7 @@ export function ChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState("")
   const chatEndRef = useRef<HTMLDivElement>(null)
-  const prevStepRef = useRef<AppStep>(currentStep)
+  const prevStepRef = useRef<string>(currentStep)
   const prevManifestRef = useRef<string | undefined>(manifestId)
 
   const { sendMessage, getHistory, clearHistory, isLoading } = useChat()
@@ -148,9 +151,11 @@ export function ChatPanel({
         // Add visual notification
         const artifactLabel = currentStep === "understanding"
           ? "experiment understanding"
-          : currentStep === "scripts"
+          : currentStep === "execute"
             ? "script plan"
-            : "data"
+            : currentStep === "strategy"
+              ? "analysis strategy"
+              : "data"
         const updateNotice: ChatMessage = {
           role: "assistant",
           content: `[Updated the ${artifactLabel}]`,
@@ -158,7 +163,7 @@ export function ChatPanel({
         }
         setMessages((prev) => [...prev, updateNotice])
 
-        if (currentStep === "scripts" && result.change_summary) {
+        if (currentStep === "execute" && result.change_summary) {
           const summaryNotice: ChatMessage = {
             role: "assistant",
             content: renderChangeSummary(result.change_summary),

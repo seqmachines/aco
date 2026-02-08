@@ -27,9 +27,10 @@ class RunInfo(BaseModel):
     updated_at: datetime | None = None
     stages_completed: list[str] = Field(default_factory=list)
     has_understanding: bool = False
-    has_scripts: bool = False
+    has_scripts: bool = False  # maps to "execute" stage
     has_notebook: bool = False
     has_report: bool = False
+    has_strategy: bool = False
     experiment_name: str | None = None
     assay_type: str | None = None
 
@@ -104,19 +105,34 @@ async def list_runs():
                 manifest_id = run_path.name
                 run_manager = get_run_manager(runs_root_dir, manifest_id)
                 
-                # Check which stages exist
+                # Check which stages exist (try new three-phase layout first, then legacy)
                 stages = []
                 stage_dirs = [
+                    ("01_understand/scan", "scan"),
+                    ("01_understand/understanding", "understanding"),
+                    ("02_analyze/hypothesis", "hypothesis"),
+                    ("02_analyze/strategy", "strategy"),
+                    ("02_analyze/results", "execute"),
+                    ("03_summarize/plots", "plots"),
+                    ("03_summarize/notebook", "notebook"),
+                    ("03_summarize/report", "report"),
+                ]
+                # Legacy fallbacks
+                legacy_dirs = [
                     ("01_scan", "scan"),
-                    ("02_manifest", "manifest"),
+                    ("02_manifest", "scan"),
                     ("03_understanding", "understanding"),
-                    ("04_scripts", "scripts"),
+                    ("04_scripts", "execute"),
                     ("05_notebook", "notebook"),
                     ("06_report", "report"),
                 ]
                 
                 for stage_dir, stage_name in stage_dirs:
                     if run_manager.stage_path(stage_dir).exists():
+                        stages.append(stage_name)
+                # Add legacy stages not yet found
+                for stage_dir, stage_name in legacy_dirs:
+                    if stage_name not in stages and run_manager.stage_path(stage_dir).exists():
                         stages.append(stage_name)
                 
                 # Get understanding info if available
@@ -127,10 +143,11 @@ async def list_runs():
                     manifest_id=manifest_id,
                     stages_completed=stages,
                     has_understanding="understanding" in stages,
-                    has_scripts="scripts" in stages,
+                    has_scripts="execute" in stages,
                     has_notebook="notebook" in stages,
                     has_report="report" in stages,
-                    experiment_name=None, # Don't use summary as name, it's too verbose
+                    has_strategy="strategy" in stages,
+                    experiment_name=None,
                     assay_type=understanding.assay_name if understanding else None,
                 )
                 
@@ -170,19 +187,32 @@ async def get_run(manifest_id: str):
     runs_root_dir = get_runs_root_dir()
     run_manager = get_run_manager(runs_root_dir, manifest_id)
     
-    # Check which stages exist
+    # Check which stages exist (try new three-phase layout first, then legacy)
     stages = []
     stage_dirs = [
+        ("01_understand/scan", "scan"),
+        ("01_understand/understanding", "understanding"),
+        ("02_analyze/hypothesis", "hypothesis"),
+        ("02_analyze/strategy", "strategy"),
+        ("02_analyze/results", "execute"),
+        ("03_summarize/plots", "plots"),
+        ("03_summarize/notebook", "notebook"),
+        ("03_summarize/report", "report"),
+    ]
+    legacy_dirs = [
         ("01_scan", "scan"),
-        ("02_manifest", "manifest"),
+        ("02_manifest", "scan"),
         ("03_understanding", "understanding"),
-        ("04_scripts", "scripts"),
+        ("04_scripts", "execute"),
         ("05_notebook", "notebook"),
         ("06_report", "report"),
     ]
     
     for stage_dir, stage_name in stage_dirs:
         if run_manager.stage_path(stage_dir).exists():
+            stages.append(stage_name)
+    for stage_dir, stage_name in legacy_dirs:
+        if stage_name not in stages and run_manager.stage_path(stage_dir).exists():
             stages.append(stage_name)
     
     # Get understanding info
@@ -193,10 +223,11 @@ async def get_run(manifest_id: str):
         manifest_id=manifest_id,
         stages_completed=stages,
         has_understanding="understanding" in stages or understanding is not None,
-        has_scripts="scripts" in stages,
+        has_scripts="execute" in stages,
         has_notebook="notebook" in stages,
         has_report="report" in stages,
-        experiment_name=None, # Don't use summary as name, it's too verbose
+        has_strategy="strategy" in stages,
+        experiment_name=None,
         assay_type=understanding.assay_name if understanding else None,
     )
     

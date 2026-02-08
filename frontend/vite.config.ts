@@ -13,14 +13,14 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/intake': { target: 'http://localhost:8000', changeOrigin: true },
-      '/scan': { target: 'http://localhost:8000', changeOrigin: true },
-      '/manifest': { target: 'http://localhost:8000', changeOrigin: true },
-      '/understanding': { target: 'http://localhost:8000', changeOrigin: true },
-      '/scripts': { target: 'http://localhost:8000', changeOrigin: true },
-      '/notebooks': { target: 'http://localhost:8000', changeOrigin: true },
-      '/reports': { target: 'http://localhost:8000', changeOrigin: true },
-      '/runs': { target: 'http://localhost:8000', changeOrigin: true },
+      '/intake': { target: 'http://localhost:7878', changeOrigin: true },
+      '/scan': { target: 'http://localhost:7878', changeOrigin: true },
+      '/manifest': { target: 'http://localhost:7878', changeOrigin: true },
+      '/understanding': { target: 'http://localhost:7878', changeOrigin: true },
+      '/scripts': { target: 'http://localhost:7878', changeOrigin: true },
+      '/notebooks': { target: 'http://localhost:7878', changeOrigin: true },
+      '/reports': { target: 'http://localhost:7878', changeOrigin: true },
+      '/runs': { target: 'http://localhost:7878', changeOrigin: true },
     },
   },
 })

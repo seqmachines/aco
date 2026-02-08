@@ -171,6 +171,19 @@ _SYSTEM_REPORT = (
     "their implications, and flag issues with context."
 )
 
+_SYSTEM_OPTIMIZE = (
+    "You are a senior bioinformatics consultant specializing in protocol "
+    "optimization and experiment design. The user has completed a sequencing "
+    "QC analysis and is now looking for:\n"
+    "- Protocol optimization suggestions\n"
+    "- Next experiment recommendations\n"
+    "- Troubleshooting guidance for failed QC gates\n"
+    "- Cost/time trade-offs for different approaches\n\n"
+    "Base your answers ONLY on the curated results provided (strategy, "
+    "gate outcomes, report summary). Do NOT guess about raw data you "
+    "haven't seen. Be specific and actionable."
+)
+
 
 _SCRIPTS_INTENT_PROMPT = """Classify whether this user message requests changing the script plan.
 
@@ -789,14 +802,94 @@ async def handle_report_chat(
 # Dispatch
 # ---------------------------------------------------------------------------
 
+async def handle_optimize_chat(
+    manifest_id: str,
+    message: str,
+    chat_history: list[ChatMessage],
+    client: GeminiClient,
+    understanding=None,
+    **kwargs,
+) -> tuple[str, bool, dict | None, dict | None]:
+    """Handle chat in the optimization step.
+
+    Context is scoped to curated outputs only: strategy summary, gate
+    results, and report summary -- NOT raw data blobs.
+    """
+    context_parts: list[str] = ["## Curated Analysis Results"]
+
+    if understanding is not None:
+        context_parts.append(f"Experiment: {understanding.assay_name} ({understanding.experiment_type.value})")
+        context_parts.append(f"Platform: {understanding.assay_platform.value}")
+        context_parts.append(f"Samples: {understanding.sample_count}")
+        context_parts.append(f"Summary: {understanding.summary[:600]}")
+        if understanding.quality_concerns:
+            context_parts.append("\n### Quality Concerns")
+            for c in understanding.quality_concerns:
+                context_parts.append(f"- [{c.severity}] {c.title}: {c.description}")
+        if understanding.recommended_checks:
+            context_parts.append("\n### Recommended Checks")
+            for c in understanding.recommended_checks:
+                context_parts.append(f"- [{c.priority}] {c.name}: {c.description}")
+    else:
+        context_parts.append("No experiment understanding available.")
+
+    # Try loading strategy summary from disk
+    import os
+    from pathlib import Path
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    strategy_path = Path(working_dir) / "aco_runs" / manifest_id / "02_analyze" / "strategy" / "strategy.json"
+    if strategy_path.exists():
+        try:
+            strategy_data = json.loads(strategy_path.read_text())
+            context_parts.append(f"\n### Analysis Strategy Summary\n{strategy_data.get('summary', '(no summary)')}")
+            gates = strategy_data.get("gate_checklist", [])
+            if gates:
+                context_parts.append("\n### QC Gates")
+                for g in gates:
+                    context_parts.append(f"- {g.get('gate_name', '?')}: pass={g.get('pass_criteria', '?')}, fail={g.get('fail_criteria', '?')}")
+        except Exception:
+            pass
+
+    report_info = kwargs.get("report_info")
+    if report_info:
+        context_parts.append(f"\n### Report\n{str(report_info)[:500]}")
+
+    conversation = _build_conversation_context(chat_history)
+    prompt = (
+        f"{chr(10).join(context_parts)}\n\n"
+        f"## Conversation\n{conversation}\n\n"
+        f"User: {message}"
+    )
+
+    response = await client.generate_async(
+        prompt=prompt,
+        system_instruction=_SYSTEM_OPTIMIZE,
+        temperature=0.7,
+        max_output_tokens=4096,
+    )
+    return response.strip(), False, None, None
+
+
 STEP_HANDLERS = {
+    # Phase 1: Understand
+    "describe": handle_intake_chat,
+    "scan": handle_scanning_chat,
+    "understanding": handle_understanding_chat,
+    # Phase 2: Analyze
+    "hypothesis": handle_manifest_chat,  # reuse generic handler for now
+    "references": handle_manifest_chat,  # reuse generic handler for now
+    "strategy": handle_understanding_chat,  # reuse understanding handler for now
+    "execute": handle_scripts_chat,
+    # Phase 3: Summarize
+    "plots": handle_notebook_chat,  # reuse notebook handler for now
+    "notebook": handle_notebook_chat,
+    "report": handle_report_chat,
+    "optimize": handle_optimize_chat,
+    # Legacy names (backward compat)
     "intake": handle_intake_chat,
     "scanning": handle_scanning_chat,
     "manifest": handle_manifest_chat,
-    "understanding": handle_understanding_chat,
     "scripts": handle_scripts_chat,
-    "notebook": handle_notebook_chat,
-    "report": handle_report_chat,
 }
 
 # Shared store instance

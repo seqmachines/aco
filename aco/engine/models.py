@@ -126,10 +126,28 @@ class ReadSegment(BaseModel):
     whitelist_file: str | None = Field(default=None, description="Barcode whitelist filename if applicable")
 
 
+class LibraryType(str, Enum):
+    """Library types within a multimodal experiment."""
+
+    GEX = "gex"
+    CITE_SEQ = "cite_seq"
+    ADT = "adt"
+    HTO = "hto"
+    ATAC = "atac"
+    VDJ_T = "vdj_t"
+    VDJ_B = "vdj_b"
+    CRISPR = "crispr"
+    CUSTOM = "custom"
+
+
 class ReadStructure(BaseModel):
     """Complete read structure definition for a sequencing assay."""
     
     assay_name: str = Field(..., description="Name of the assay (e.g., '10x Chromium 3' v3')")
+    library_type: LibraryType = Field(
+        default=LibraryType.GEX,
+        description="Library type: gex, cite_seq, adt, hto, atac, vdj_t, vdj_b, crispr, custom",
+    )
     total_reads: int = Field(default=2, description="Number of reads (typically 2 for PE)")
     read1_length: int | None = Field(default=None, description="Read 1 length")
     read2_length: int | None = Field(default=None, description="Read 2 length")
@@ -174,9 +192,14 @@ class ExperimentUnderstanding(BaseModel):
         default=None, description="Detailed assay structure"
     )
     
-    # Read structure (barcode/UMI layout)
+    # Read structure (barcode/UMI layout) -- primary / GEX library
     read_structure: ReadStructure | None = Field(
-        default=None, description="Detailed read structure with barcode/UMI segments"
+        default=None, description="Primary read structure (typically GEX) with barcode/UMI segments"
+    )
+    # Additional read structures for multimodal experiments (CITE-seq/ADT, ATAC, VDJ, etc.)
+    additional_read_structures: list[ReadStructure] = Field(
+        default_factory=list,
+        description="Read structures for additional library types (CITE-seq, ATAC, VDJ, etc.)",
     )
     
     # Detected existing scripts/pipelines
@@ -261,3 +284,153 @@ class UnderstandingApproval(BaseModel):
     feedback: str | None = Field(
         default=None, description="User feedback for improvement"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Analyze -- Hypothesis & Goals
+# ---------------------------------------------------------------------------
+
+
+class HypothesisPriority(str, Enum):
+    """Priority level for a hypothesis."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class UserHypothesis(BaseModel):
+    """A single user-declared hypothesis."""
+
+    text: str = Field(..., description="Hypothesis statement")
+    priority: HypothesisPriority = Field(
+        default=HypothesisPriority.MEDIUM, description="Priority level"
+    )
+    rationale: str | None = Field(
+        default=None, description="Why the user suspects this"
+    )
+
+
+class HypothesisSet(BaseModel):
+    """Collection of user hypotheses and goals for a run."""
+
+    manifest_id: str = Field(..., description="Manifest this belongs to")
+    what_is_wrong: str = Field(
+        default="", description="Free-text: what the user thinks is wrong"
+    )
+    what_to_prove: str = Field(
+        default="", description="Free-text: what the user wants to prove"
+    )
+    hypotheses: list[UserHypothesis] = Field(
+        default_factory=list, description="Structured hypothesis list"
+    )
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Analyze -- Analysis Strategy
+# ---------------------------------------------------------------------------
+
+
+class HypothesisTest(BaseModel):
+    """A single hypothesis mapped to a test method."""
+
+    hypothesis: str = Field(..., description="Hypothesis text")
+    test_method: str = Field(..., description="How to test it")
+    expected_outcome: str = Field(
+        default="", description="What a pass / fail looks like"
+    )
+    required_data: list[str] = Field(
+        default_factory=list, description="Files or data needed"
+    )
+
+
+class GateCheckItem(BaseModel):
+    """A single QC gate with pass/fail criteria."""
+
+    gate_name: str = Field(..., description="Human-readable gate name")
+    description: str = Field(default="", description="What this gate checks")
+    pass_criteria: str = Field(default="", description="Pass condition")
+    fail_criteria: str = Field(default="", description="Fail condition")
+    module_name: str | None = Field(
+        default=None, description="Deterministic module to use (if available)"
+    )
+    priority: str = Field(default="required", description="required | recommended | optional")
+
+
+class ExecutionStep(BaseModel):
+    """A single step in an ordered execution plan."""
+
+    name: str = Field(..., description="Step name")
+    description: str = Field(default="", description="What this step does")
+    tool_or_module: str = Field(default="", description="Tool / module to run")
+    depends_on: list[str] = Field(
+        default_factory=list, description="Names of steps this depends on"
+    )
+    is_deterministic: bool = Field(
+        default=False, description="True if a registered QC module handles this"
+    )
+    estimated_runtime: str | None = Field(default=None)
+
+
+class ScriptInsight(BaseModel):
+    """Insight extracted from a reference script (safe analysis)."""
+
+    script_path: str = Field(..., description="Path to the analysed script")
+    intent: str = Field(default="", description="What the script does")
+    parameters: dict[str, str] = Field(
+        default_factory=dict, description="Key parameters extracted"
+    )
+    adaptation_notes: list[str] = Field(
+        default_factory=list,
+        description="Diff-aware suggestions for adapting to new data",
+    )
+
+
+class AnalysisStrategy(BaseModel):
+    """LLM-generated analysis strategy for a run."""
+
+    manifest_id: str = Field(..., description="Manifest this belongs to")
+    hypotheses_to_test: list[HypothesisTest] = Field(default_factory=list)
+    gate_checklist: list[GateCheckItem] = Field(default_factory=list)
+    required_modules: list[str] = Field(
+        default_factory=list, description="Deterministic QC modules needed"
+    )
+    required_tools: list[str] = Field(
+        default_factory=list, description="External tools needed (samtools, etc.)"
+    )
+    execution_plan: list[ExecutionStep] = Field(default_factory=list)
+    script_insights: list[ScriptInsight] = Field(
+        default_factory=list,
+        description="Insights from reference scripts (safe analysis)",
+    )
+    summary: str = Field(default="", description="Human-readable strategy summary")
+    user_approach: str | None = Field(
+        default=None, description="User-specified analysis approach"
+    )
+    generated_at: datetime = Field(default_factory=datetime.now)
+    model_used: str | None = None
+    is_approved: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Summarize -- Plot selection
+# ---------------------------------------------------------------------------
+
+
+class PlotSelection(BaseModel):
+    """User's choice of plots and tests for notebook generation."""
+
+    manifest_id: str = Field(..., description="Manifest this belongs to")
+    selected_plots: list[str] = Field(
+        default_factory=list, description="IDs of selected plot types"
+    )
+    custom_plot_requests: str = Field(
+        default="", description="Free-text custom plot requests"
+    )
+    selected_tests: list[str] = Field(
+        default_factory=list,
+        description="Statistical tests to include (e.g. t_test, chi_square)",
+    )
+    created_at: datetime = Field(default_factory=datetime.now)

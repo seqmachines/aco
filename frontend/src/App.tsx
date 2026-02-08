@@ -1,10 +1,15 @@
 import { useState, useCallback, useEffect } from "react"
-import { Dna, Github, Settings as SettingsIcon, Moon, Sun, Check, Circle, Loader2, PanelLeftClose, PanelLeft } from "lucide-react"
+import { Dna, Github, Settings as SettingsIcon, Moon, Sun, Check, Circle, Loader2, PanelLeftClose, PanelLeft, ChevronRight } from "lucide-react"
 import { IntakeForm } from "@/components/IntakeForm"
 import { FileScanner } from "@/components/FileScanner"
 import { ManifestViewer } from "@/components/ManifestViewer"
 import { UnderstandingEditor, type UnderstandingGenerateOptions } from "@/components/UnderstandingEditor"
+import { HypothesisForm } from "@/components/HypothesisForm"
+// ReferenceSelector merged into HypothesisForm
+
+import { StrategyViewer } from "@/components/StrategyViewer"
 import { ScriptRunner } from "@/components/ScriptRunner"
+import { PlotChooser } from "@/components/PlotChooser"
 import { NotebookEditor } from "@/components/NotebookEditor"
 import { ReportViewer } from "@/components/ReportViewer"
 import { RunSelector } from "@/components/RunSelector"
@@ -19,26 +24,10 @@ import { useTheme } from "@/hooks/useTheme"
 import { useSettings } from "@/hooks/useSettings"
 import { useAutoSave } from "@/hooks/useAutoSave"
 import type { AppStep, Manifest, ExperimentUnderstanding, IntakeFormData, ScriptPlan } from "@/types"
-
-interface SidebarSection {
-  id: AppStep
-  label: string
-  shortLabel: string
-}
-
-const sections: SidebarSection[] = [
-  { id: "intake", label: "Describe Your Experiment", shortLabel: "Describe" },
-  { id: "scanning", label: "Scanning Files", shortLabel: "Scan" },
-  { id: "manifest", label: "Review Run Data", shortLabel: "Review" },
-  { id: "understanding", label: "Analyze & Plan", shortLabel: "Analyze" },
-  { id: "scripts", label: "Generate & Execute Scripts", shortLabel: "Scripts" },
-  { id: "notebook", label: "Analysis Notebook", shortLabel: "Notebook" },
-  { id: "report", label: "QC Report", shortLabel: "Report" },
-  { id: "approved", label: "Analysis Complete", shortLabel: "Complete" },
-]
+import { PHASES, stepIndex, stepDef, phaseForStep } from "@/types"
 
 function App() {
-  const [currentStep, setCurrentStep] = useState<AppStep>("intake")
+  const [currentStep, setCurrentStep] = useState<AppStep>("describe")
   const [manifest, setManifest] = useState<Manifest | null>(null)
   const [understanding, setUnderstanding] = useState<ExperimentUnderstanding | null>(null)
   const [scriptPlan, setScriptPlan] = useState<ScriptPlan | null>(null)
@@ -47,6 +36,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
+  // Track the highest step ever reached so users can navigate back to any visited step
+  const [highestVisitedIdx, setHighestVisitedIdx] = useState(0)
 
   const { theme, toggleTheme } = useTheme()
   const { settings, updateSettings, availableModels } = useSettings()
@@ -64,6 +55,12 @@ function App() {
 
   // Get the default directory from config (where aco was started)
   const defaultDirectory = config?.working_dir || ""
+
+  // Keep highestVisitedIdx in sync with navigation
+  useEffect(() => {
+    const idx = stepIndex(currentStep)
+    setHighestVisitedIdx((prev) => Math.max(prev, idx))
+  }, [currentStep])
 
   // Auto-generate script plan after understanding is available
   const generateScriptPlan = useCallback(
@@ -135,14 +132,14 @@ function App() {
                 const stages = runData.stages_completed
                 if (stages.includes("report")) setCurrentStep("report")
                 else if (stages.includes("notebook")) setCurrentStep("notebook")
-                else if (stages.includes("scripts")) setCurrentStep("scripts")
+                else if (stages.includes("execute")) setCurrentStep("execute")
                 else if (stages.includes("understanding")) setCurrentStep("understanding")
-                else setCurrentStep("manifest")
+                else setCurrentStep("scan")
               } else {
                 setCurrentStep("understanding")
               }
             } else {
-              setCurrentStep("manifest")
+              setCurrentStep("scan")
             }
           }
         }
@@ -157,17 +154,19 @@ function App() {
   const handleIntakeSubmit = useCallback(
     async (data: IntakeFormData) => {
       setError(null)
-      setCurrentStep("scanning")
+      // Briefly show scanning state within the scan step
+      setCurrentStep("scan")
 
       const result = await submitIntake(data)
       if (result) {
         setManifest(result.manifest)
-        setCurrentStep("manifest")
+        // Stay on scan step which now shows the ManifestViewer
+        setCurrentStep("scan")
         // Clear saved draft after successful submission
         clearData()
       } else {
         setError("Failed to submit intake. Please check your input and try again.")
-        setCurrentStep("intake")
+        setCurrentStep("describe")
       }
     },
     [submitIntake, clearData]
@@ -212,8 +211,8 @@ function App() {
       // Auto-generate script plan after understanding
       generateScriptPlan(manifest.id)
     } else {
-      // Go back to Manifest Review step and open settings
-      setCurrentStep("manifest")
+      // Go back to Scan & Review step and open settings
+      setCurrentStep("scan")
       setSettingsOpen(true)
     }
   }, [manifest, generateUnderstanding, generateScriptPlan, settings.model, settings.apiKey])
@@ -235,8 +234,8 @@ function App() {
       // Auto-regenerate script plan after understanding
       generateScriptPlan(manifest.id)
     } else {
-      // Go back to Manifest Review step and open settings
-      setCurrentStep("manifest")
+      // Go back to Scan & Review step and open settings
+      setCurrentStep("scan")
       setSettingsOpen(true)
     }
   }, [manifest, generateUnderstanding, generateScriptPlan, settings.model, settings.apiKey])
@@ -249,7 +248,7 @@ function App() {
       const result = await approveUnderstanding(manifest.id, edits)
       if (result) {
         setUnderstanding(result.understanding)
-        setCurrentStep("scripts")
+        setCurrentStep("hypothesis")
       } else {
         setError("Failed to approve understanding.")
       }
@@ -258,7 +257,8 @@ function App() {
   )
 
   const handleStartOver = useCallback(() => {
-    setCurrentStep("intake")
+    setCurrentStep("describe")
+    setHighestVisitedIdx(0)
     setManifest(null)
     setUnderstanding(null)
     setScriptPlan(null)
@@ -270,27 +270,23 @@ function App() {
   const handleArtifactUpdate = useCallback((step: AppStep, data: Record<string, unknown>) => {
     if (step === "understanding") {
       setUnderstanding(data as unknown as ExperimentUnderstanding)
-    } else if (step === "scripts") {
+    } else if (step === "execute") {
       // Trust the chat update payload as the freshest plan state.
-      // A follow-up GET can hit stale in-memory cache in another worker and
-      // incorrectly overwrite the just-updated plan in UI.
       setScriptPlan(data as unknown as ScriptPlan)
     }
   }, [])
 
-  // Handle sidebar navigation
-  const handleSectionClick = (sectionId: AppStep) => {
-    const currentIndex = sections.findIndex(s => s.id === currentStep)
-    const targetIndex = sections.findIndex(s => s.id === sectionId)
-
-    // Only allow navigating to completed or current sections
-    if (targetIndex <= currentIndex) {
-      setCurrentStep(sectionId)
+  // Handle sidebar navigation -- allow jumping to any previously visited step
+  const handleStepClick = (targetStep: AppStep) => {
+    const tgtIdx = stepIndex(targetStep)
+    if (tgtIdx <= highestVisitedIdx) {
+      setCurrentStep(targetStep)
     }
   }
 
   const isLoading = intakeLoading || manifestLoading || understandingLoading
-  const currentIndex = sections.findIndex(s => s.id === currentStep)
+  const currentPhase = phaseForStep(currentStep)
+  const currentStepDef = stepDef(currentStep)
 
   return (
     <div className="h-screen overflow-hidden bg-background flex">
@@ -385,7 +381,7 @@ function App() {
                     setUnderstanding(data.understanding)
                     setCurrentStep("understanding")
                   } else {
-                    setCurrentStep("manifest")
+                    setCurrentStep("scan")
                   }
                 } catch (e) {
                   setError("Failed to load run")
@@ -396,60 +392,119 @@ function App() {
           </div>
         )}
 
-        {/* Navigation Sections */}
-        <nav className={cn("flex-1 py-2", sidebarCollapsed ? "px-2" : "px-2")}>
-          {sections.map((section, index) => {
-            const isComplete = index < currentIndex
-            const isCurrent = index === currentIndex
-            const isAccessible = index <= currentIndex
-
+        {/* Phase-grouped navigation */}
+        <nav className={cn("flex-1 py-2 overflow-y-auto", sidebarCollapsed ? "px-2" : "px-2")}>
+          {PHASES.map((phase, phaseIdx) => {
+            const phaseStepIndices = phase.steps.map((s) => stepIndex(s.id))
+            const phaseLastIdx = phaseStepIndices[phaseStepIndices.length - 1]
+            const isPhaseComplete = highestVisitedIdx > phaseLastIdx
+            const isPhaseCurrent = currentPhase === phase.id
             return (
-              <button
-                key={section.id}
-                onClick={() => handleSectionClick(section.id)}
-                disabled={!isAccessible}
-                title={sidebarCollapsed ? section.label : undefined}
-                className={cn(
-                  "w-full flex items-center gap-2 rounded transition-all duration-200 mb-0.5",
-                  sidebarCollapsed ? "px-0 py-2 justify-center" : "px-2 py-2",
-                  isCurrent && "bg-foreground/10",
-                  isComplete && "hover:bg-muted/50 cursor-pointer",
-                  !isAccessible && "opacity-35 cursor-not-allowed",
-                  isAccessible && !isCurrent && "hover:bg-muted/50"
-                )}
-              >
-                {/* Status Indicator */}
-                <div
-                  className={cn(
-                    "flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold transition-all duration-300",
-                    isComplete && "bg-foreground text-background",
-                    isCurrent && "bg-foreground/20 text-foreground ring-1 ring-foreground/30",
-                    !isComplete && !isCurrent && "bg-muted text-muted-foreground"
-                  )}
-                >
-                  {isComplete ? (
-                    <Check className="h-3 w-3" />
-                  ) : isCurrent && isLoading ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <span>{index + 1}</span>
-                  )}
-                </div>
-
-                {/* Label - only show when not collapsed */}
-                {!sidebarCollapsed && (
-                  <span
+              <div key={phase.id} className="mb-1">
+                {/* Phase header */}
+                {!sidebarCollapsed ? (
+                  <div
                     className={cn(
-                      "text-xs font-medium truncate",
-                      isCurrent && "text-foreground",
-                      isComplete && "text-foreground",
-                      !isComplete && !isCurrent && "text-muted-foreground"
+                      "flex items-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                      isPhaseComplete && "text-foreground",
+                      isPhaseCurrent && "text-foreground",
+                      !isPhaseComplete && !isPhaseCurrent && "text-muted-foreground/60"
                     )}
                   >
-                    {section.shortLabel}
-                  </span>
+                    <div
+                      className={cn(
+                        "flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold",
+                        isPhaseComplete && "bg-foreground text-background",
+                        isPhaseCurrent && "bg-foreground/20 text-foreground ring-1 ring-foreground/30",
+                        !isPhaseComplete && !isPhaseCurrent && "bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {isPhaseComplete ? (
+                        <Check className="h-2.5 w-2.5" />
+                      ) : (
+                        <span>{phaseIdx + 1}</span>
+                      )}
+                    </div>
+                    <span>{phase.shortLabel}</span>
+                  </div>
+                ) : (
+                  <div
+                    className={cn(
+                      "flex justify-center py-1.5",
+                    )}
+                    title={phase.label}
+                  >
+                    <div
+                      className={cn(
+                        "w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold",
+                        isPhaseComplete && "bg-foreground text-background",
+                        isPhaseCurrent && "bg-foreground/20 text-foreground ring-1 ring-foreground/30",
+                        !isPhaseComplete && !isPhaseCurrent && "bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {isPhaseComplete ? (
+                        <Check className="h-2.5 w-2.5" />
+                      ) : (
+                        <span>{phaseIdx + 1}</span>
+                      )}
+                    </div>
+                  </div>
                 )}
-              </button>
+
+                {/* Sub-steps */}
+                {!sidebarCollapsed && (
+                  <div className="ml-4 border-l border-border/50 pl-2">
+                    {phase.steps.map((step) => {
+                      const idx = stepIndex(step.id)
+                      const isVisited = idx < highestVisitedIdx
+                      const isCurrent = step.id === currentStep
+                      const isAccessible = idx <= highestVisitedIdx
+
+                      return (
+                        <button
+                          key={step.id}
+                          onClick={() => handleStepClick(step.id)}
+                          disabled={!isAccessible}
+                          className={cn(
+                            "w-full flex items-center gap-1.5 rounded transition-all duration-200 px-2 py-1.5 mb-0.5",
+                            isCurrent && "bg-foreground/10",
+                            isVisited && !isCurrent && "hover:bg-muted/50 cursor-pointer",
+                            !isAccessible && "opacity-35 cursor-not-allowed",
+                            isAccessible && !isCurrent && "hover:bg-muted/50"
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center transition-all duration-300",
+                              isVisited && !isCurrent && "bg-foreground text-background",
+                              isCurrent && "bg-foreground/20 text-foreground ring-1 ring-foreground/30",
+                              !isVisited && !isCurrent && "bg-muted text-muted-foreground"
+                            )}
+                          >
+                            {isVisited && !isCurrent ? (
+                              <Check className="h-2.5 w-2.5" />
+                            ) : isCurrent && isLoading ? (
+                              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                            ) : (
+                              <ChevronRight className="h-2.5 w-2.5" />
+                            )}
+                          </div>
+                          <span
+                            className={cn(
+                              "text-[11px] font-medium truncate",
+                              isCurrent && "text-foreground",
+                              isVisited && "text-foreground",
+                              !isVisited && !isCurrent && "text-muted-foreground"
+                            )}
+                          >
+                            {step.shortLabel}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             )
           })}
         </nav>
@@ -463,7 +518,7 @@ function App() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold">
-                {sections.find(s => s.id === currentStep)?.label}
+                {currentStepDef?.label ?? currentStep}
               </h2>
             </div>
             <div className="flex items-center gap-2">
@@ -472,7 +527,7 @@ function App() {
                   {manifest.id.replace("manifest_", "run_")}
                 </Badge>
               )}
-              {currentStep === "intake" && savedData && (
+              {currentStep === "describe" && savedData && (
                 <Badge variant="secondary" className="text-[10px]">
                   <Circle className="h-1.5 w-1.5 mr-1 fill-success text-success" />
                   Draft saved
@@ -529,8 +584,9 @@ function App() {
             </Card>
           )}
 
-          {/* Step Content */}
-          {currentStep === "intake" && (
+          {/* ---- Phase 1: Understand ---- */}
+
+          {currentStep === "describe" && (
             <div className="max-w-4xl mx-auto">
               <IntakeForm
                 onSubmit={handleIntakeSubmit}
@@ -542,13 +598,13 @@ function App() {
             </div>
           )}
 
-          {currentStep === "scanning" && (
+          {currentStep === "scan" && !manifest && (
             <div className="max-w-4xl mx-auto">
               <FileScanner scanResult={null} isLoading={true} />
             </div>
           )}
 
-          {currentStep === "manifest" && manifest && (
+          {currentStep === "scan" && manifest && (
             <div className="max-w-5xl mx-auto">
               <ManifestViewer
                 manifest={manifest}
@@ -570,7 +626,31 @@ function App() {
             </div>
           )}
 
-          {currentStep === "scripts" && manifest && (
+          {/* ---- Phase 2: Analyze ---- */}
+
+          {currentStep === "hypothesis" && manifest && (
+            <div className="max-w-5xl mx-auto">
+              <HypothesisForm
+                manifestId={manifest.id}
+                onComplete={() => setCurrentStep("strategy")}
+                onBack={() => setCurrentStep("understanding")}
+              />
+            </div>
+          )}
+
+          {currentStep === "strategy" && manifest && (
+            <div className="max-w-5xl mx-auto">
+              <StrategyViewer
+                manifestId={manifest.id}
+                model={settings.model}
+                apiKey={settings.apiKey}
+                onComplete={() => setCurrentStep("execute")}
+                onBack={() => setCurrentStep("hypothesis")}
+              />
+            </div>
+          )}
+
+          {currentStep === "execute" && manifest && (
             <div className="max-w-5xl mx-auto">
               <ScriptRunner
                 manifestId={manifest.id}
@@ -579,9 +659,21 @@ function App() {
                 model={settings.model}
                 apiKey={settings.apiKey}
                 onPlanUpdate={setScriptPlan}
+                onComplete={() => setCurrentStep("plots")}
+                onBack={() => setCurrentStep("strategy")}
+                onProceed={() => setCurrentStep("plots")}
+              />
+            </div>
+          )}
+
+          {/* ---- Phase 3: Summarize ---- */}
+
+          {currentStep === "plots" && manifest && (
+            <div className="max-w-5xl mx-auto">
+              <PlotChooser
+                manifestId={manifest.id}
                 onComplete={() => setCurrentStep("notebook")}
-                onBack={() => setCurrentStep("understanding")}
-                onProceed={() => setCurrentStep("notebook")}
+                onBack={() => setCurrentStep("execute")}
               />
             </div>
           )}
@@ -593,8 +685,8 @@ function App() {
                 onComplete={() => setCurrentStep("report")}
               />
               <div className="flex justify-between mt-6 pt-4 border-t">
-                <Button variant="outline" onClick={() => setCurrentStep("scripts")}>
-                  Back to Scripts
+                <Button variant="outline" onClick={() => setCurrentStep("plots")}>
+                  Back to Plot Selection
                 </Button>
                 <Button onClick={() => setCurrentStep("report")}>
                   Proceed to Report
@@ -607,29 +699,29 @@ function App() {
             <div className="max-w-5xl mx-auto">
               <ReportViewer
                 manifestId={manifest.id}
-                onComplete={() => setCurrentStep("approved")}
+                onComplete={() => setCurrentStep("optimize")}
               />
               <div className="flex justify-between mt-6 pt-4 border-t">
                 <Button variant="outline" onClick={() => setCurrentStep("notebook")}>
                   Back to Notebook
                 </Button>
-                <Button onClick={() => setCurrentStep("approved")}>
-                  Complete Analysis
+                <Button onClick={() => setCurrentStep("optimize")}>
+                  Continue to Optimization
                 </Button>
               </div>
             </div>
           )}
 
-          {currentStep === "approved" && understanding && (
+          {currentStep === "optimize" && understanding && (
             <div className="max-w-5xl mx-auto">
               <Card className="border-success/30 bg-success/5">
                 <CardContent className="py-8 text-center">
                   <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-success/20 mb-4">
                     <Dna className="h-8 w-8 text-success" />
                   </div>
-                  <h2 className="text-2xl font-bold mb-2">Analysis Complete!</h2>
+                  <h2 className="text-2xl font-bold mb-2">Analysis Complete</h2>
                   <p className="text-muted-foreground mb-6">
-                    Your experiment understanding has been approved and is ready for QC.
+                    Use the chat panel to discuss optimization strategies, protocol improvements, and next steps.
                   </p>
                   <div className="flex justify-center gap-4">
                     <Button variant="outline" onClick={handleStartOver}>
@@ -672,8 +764,8 @@ function App() {
         </footer>
       </div>
 
-      {/* Chat Panel - Right Sidebar (only on analysis steps) */}
-      {!["intake", "scanning", "manifest"].includes(currentStep) && (
+      {/* Chat Panel - Right Sidebar (show for all steps except describe) */}
+      {currentStep !== "describe" && (
         <ChatPanel
           manifestId={manifest?.id}
           currentStep={currentStep}

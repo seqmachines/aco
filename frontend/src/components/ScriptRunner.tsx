@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react"
+import ReactMarkdown from "react-markdown"
 import {
     Play,
     CheckCircle,
@@ -15,6 +16,8 @@ import {
     Link2,
     Trash2,
     Save,
+    ArrowRight,
+    Copy,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -84,6 +87,31 @@ function PlanScriptCard({
     readonly?: boolean
 }) {
     const [expanded, setExpanded] = useState(true)
+    const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle")
+
+    const handleCopyCode = useCallback(async () => {
+        if (!script.code) return
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(script.code)
+            } else {
+                const textArea = document.createElement("textarea")
+                textArea.value = script.code
+                textArea.setAttribute("readonly", "")
+                textArea.style.position = "absolute"
+                textArea.style.left = "-9999px"
+                document.body.appendChild(textArea)
+                textArea.select()
+                document.execCommand("copy")
+                document.body.removeChild(textArea)
+            }
+            setCopyState("copied")
+        } catch {
+            setCopyState("error")
+        } finally {
+            window.setTimeout(() => setCopyState("idle"), 2000)
+        }
+    }, [script.code])
 
     return (
         <div
@@ -216,6 +244,44 @@ function PlanScriptCard({
                                     </option>
                                 ))}
                             </select>
+                        </div>
+                    )}
+
+                    {/* Code snippet (if code has been generated) */}
+                    {script.code && (
+                        <div className="pt-2 border-t border-border/50 mt-2">
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                                <label className="text-xs text-muted-foreground">Generated Code</label>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 px-2 text-[10px]"
+                                    onClick={handleCopyCode}
+                                >
+                                    {copyState === "copied" ? (
+                                        <>
+                                            <Check className="h-3 w-3 mr-1" />
+                                            Copied
+                                        </>
+                                    ) : copyState === "error" ? (
+                                        "Copy failed"
+                                    ) : (
+                                        <>
+                                            <Copy className="h-3 w-3 mr-1" />
+                                            Copy
+                                        </>
+                                    )}
+                                </Button>
+                            </div>
+                            <pre className="p-3 bg-muted rounded text-xs font-mono overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap">
+                                {script.code}
+                            </pre>
+                            <div className="mt-1.5 flex items-center gap-2">
+                                <Terminal className="h-3 w-3 text-muted-foreground" />
+                                <code className="text-[10px] text-muted-foreground font-mono">
+                                    python scripts/{script.name}
+                                </code>
+                            </div>
                         </div>
                     )}
                 </div>
@@ -384,6 +450,7 @@ function ExecutionResultCard({ result }: { result: ExecutionResult }) {
 export function ScriptRunner({ manifestId, initialPlan, understanding, model, apiKey, onPlanUpdate, onComplete, onBack, onProceed }: ScriptRunnerProps) {
     const [plan, setPlan] = useState<ScriptPlan | null>(initialPlan || null)
     const [isGeneratingPlan, setIsGeneratingPlan] = useState(false)
+    const [isGeneratingCode, setIsGeneratingCode] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
     // Pipeline state
@@ -516,6 +583,77 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, model, ap
             // No existing plan
         }
     }
+
+    // Check if code has been generated for all scripts
+    const hasCode = plan?.scripts.some((s) => s.code && s.code.trim().length > 0) ?? false
+    const usageInstructions = (plan?.usage_instructions || "").trim()
+
+    // Auto-generate code when plan is available but no code yet
+    const generateCode = useCallback(async () => {
+        if (!plan) return
+
+        // Auto-save any pending edits before generating code
+        if (isDirty) {
+            try {
+                const saveRes = await fetch(`/scripts/plan/${manifestId}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ plan: plan }),
+                })
+                if (!saveRes.ok) {
+                    const data = await saveRes.json()
+                    setError(data.detail || "Failed to save plan before code generation")
+                    return
+                }
+                const saveData = await saveRes.json()
+                setPlan(saveData.plan)
+                onPlanUpdate?.(saveData.plan)
+                setIsDirty(false)
+            } catch (e) {
+                setError(e instanceof Error ? e.message : "Failed to save plan before code generation")
+                return
+            }
+        }
+
+        setIsGeneratingCode(true)
+        setError(null)
+        try {
+            const codePayload: Record<string, unknown> = {
+                manifest_id: manifestId,
+                model: model || undefined,
+                api_key: apiKey || undefined,
+            }
+            if (Object.keys(referenceScripts).length > 0) {
+                codePayload.reference_script_paths = referenceScripts
+            }
+            const codeRes = await fetch("/scripts/generate-all-code", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(codePayload),
+            })
+            if (!codeRes.ok) {
+                const data = await codeRes.json()
+                throw new Error(data.detail || "Code generation failed")
+            }
+            const codeData = await codeRes.json()
+            if (codeData.failed && codeData.failed.length > 0) {
+                setError(`Code generation failed for: ${codeData.failed.join(", ")}`)
+            }
+            // Reload plan to get code
+            const planRes = await fetch(`/scripts/plan/${manifestId}`)
+            if (planRes.ok) {
+                const planData = await planRes.json()
+                if (planData.plan) {
+                    setPlan(planData.plan)
+                    onPlanUpdate?.(planData.plan)
+                }
+            }
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "Code generation failed")
+        } finally {
+            setIsGeneratingCode(false)
+        }
+    }, [plan, manifestId, model, apiKey, referenceScripts, onPlanUpdate, isDirty])
 
     const generatePlan = async () => {
         setIsGeneratingPlan(true)
@@ -746,7 +884,8 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, model, ap
                         Script Plan
                     </h3>
                     <p className="text-sm text-muted-foreground">
-                        {plan.scripts.length} scripts planned — edit details below or approve and execute
+                        {plan.scripts.length} scripts planned
+                        {hasCode ? " — code generated, review below" : " — edit details below"}
                         {isDirty && <span className="text-primary ml-1">(unsaved changes)</span>}
                     </p>
                 </div>
@@ -778,6 +917,21 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, model, ap
                                 <RefreshCw className="h-3 w-3 mr-1" />
                             )}
                             Regenerate Plan
+                        </Button>
+                    )}
+                    {!hasCode && pipelinePhase === "idle" && (
+                        <Button
+                            onClick={generateCode}
+                            disabled={isGeneratingCode}
+                            size="sm"
+                            variant="outline"
+                        >
+                            {isGeneratingCode ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                                <Wand2 className="h-3 w-3 mr-1" />
+                            )}
+                            Generate Code
                         </Button>
                     )}
                     {pipelinePhase === "complete" && (
@@ -872,25 +1026,63 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, model, ap
                 </Card>
             )}
 
-            {/* Footer Actions */}
+            {/* Usage Instructions */}
+            {usageInstructions && (
+                <Card className="bg-blue-50/50 border-blue-200 dark:bg-blue-950/20 dark:border-blue-900 mb-2">
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center gap-2">
+                            <Terminal className="h-4 w-4 text-primary" />
+                            How to Run Generated Scripts
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="prose prose-sm max-w-none text-muted-foreground [&_pre]:bg-muted [&_pre]:p-4 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_code]:text-xs [&_code]:font-mono">
+                            <ReactMarkdown>{usageInstructions}</ReactMarkdown>
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            {/* Footer Actions -- two-button flow */}
             <div className="flex justify-between mt-6 pt-4 border-t border-border">
                 <Button variant="outline" onClick={onBack}>
-                    Back to Understanding
+                    Back to Strategy
                 </Button>
-                {pipelinePhase === "complete" ? (
-                    <Button onClick={onProceed}>
-                        <ChevronRight className="h-4 w-4 mr-1" />
-                        Proceed to Notebook
-                    </Button>
-                ) : (
-                    <Button
-                        onClick={executePipeline}
-                        disabled={isGeneratingPlan || (pipelinePhase !== "idle" && pipelinePhase !== "failed")}
-                    >
-                        <Play className="h-4 w-4 mr-1" />
-                        Approve & Execute
-                    </Button>
-                )}
+                <div className="flex items-center gap-2">
+                    {pipelinePhase !== "complete" && pipelinePhase !== "idle" ? null : (
+                        <>
+                            {pipelinePhase !== "complete" && (
+                                <Button
+                                    variant="outline"
+                                    onClick={executePipeline}
+                                    disabled={isGeneratingPlan || isGeneratingCode || (pipelinePhase !== "idle" && pipelinePhase !== "failed")}
+                                >
+                                    <Play className="h-4 w-4 mr-1" />
+                                    Ask Acolyte to Execute
+                                </Button>
+                            )}
+                            <Button onClick={onProceed}>
+                                <ArrowRight className="h-4 w-4 mr-1" />
+                                Proceed to Summarize
+                            </Button>
+                        </>
+                    )}
+                    {pipelinePhase === "failed" && (
+                        <>
+                            <Button
+                                variant="outline"
+                                onClick={executePipeline}
+                            >
+                                <RefreshCw className="h-4 w-4 mr-1" />
+                                Retry Pipeline
+                            </Button>
+                            <Button onClick={onProceed}>
+                                <ArrowRight className="h-4 w-4 mr-1" />
+                                Proceed to Summarize
+                            </Button>
+                        </>
+                    )}
+                </div>
             </div>
         </div>
     )

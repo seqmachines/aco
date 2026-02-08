@@ -332,10 +332,17 @@ export function UnderstandingEditor({
         </Card>
       </div>
 
-      {/* Read Structure Visualization */}
+      {/* Read Structure Visualization -- primary (GEX) */}
       {understanding.read_structure && (
         <ReadStructureVisualizer readStructure={understanding.read_structure} />
       )}
+
+      {/* Additional read structures (CITE-seq, ADT, HTO, ATAC, VDJ, etc.) */}
+      {understanding.additional_read_structures?.length > 0 &&
+        understanding.additional_read_structures.map((rs, i) => (
+          <ReadStructureVisualizer key={i} readStructure={rs} />
+        ))
+      }
 
       {/* Detected Scripts */}
       {understanding.detected_scripts && understanding.detected_scripts.length > 0 && (
@@ -491,7 +498,7 @@ export function UnderstandingEditor({
                 {understanding.is_approved ? (
                   <>
                     <ChevronRight className="h-4 w-4 mr-2" />
-                    Proceed to Scripts
+                    Proceed to Analyze
                   </>
                 ) : (
                   <>

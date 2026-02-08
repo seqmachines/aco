@@ -3,6 +3,7 @@
 import json
 import os
 import hashlib
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,8 @@ from aco.engine.scripts import (
     ScriptCategory,
     ScriptPlan,
     ScriptType,
+    detect_referenced_scripts,
+    generate_all_script_code_with_usage,
     generate_script_code,
     generate_script_plan,
     plans_equivalent,
@@ -37,10 +40,12 @@ from aco.engine.environment import (
 )
 from aco.engine.chat import get_chat_store
 from aco.engine import UnderstandingStore
+from aco.engine.models import AnalysisStrategy
 from aco.manifest import ManifestStore
 
 
 router = APIRouter(prefix="/scripts", tags=["scripts"])
+logger = logging.getLogger(__name__)
 
 
 class GeneratePlanRequest(BaseModel):
@@ -458,6 +463,369 @@ def _scripts_missing(plan: ScriptPlan, scripts_dir: Path) -> list[str]:
     return missing
 
 
+def _load_analysis_strategy(manifest_id: str) -> AnalysisStrategy | None:
+    """Load analysis strategy from disk if present."""
+    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
+    strategy_path = (
+        Path(working_dir)
+        / "aco_runs"
+        / manifest_id
+        / "02_analyze"
+        / "strategy"
+        / "strategy.json"
+    )
+    if not strategy_path.exists():
+        return None
+    try:
+        data = json.loads(strategy_path.read_text())
+        return AnalysisStrategy.model_validate(data)
+    except Exception as exc:
+        logger.warning("Failed to load strategy for %s: %s", manifest_id, exc)
+        return None
+
+
+def _build_reference_script_map(
+    plan: ScriptPlan,
+    requested_refs: dict[str, str] | None,
+    search_dirs: list[str] | None,
+) -> dict[str, str]:
+    """Resolve explicit and auto-detected reference script paths per planned script."""
+    from pathlib import Path as _Path
+
+    requested = requested_refs or {}
+    resolved: dict[str, str] = {}
+    for script in plan.scripts:
+        explicit = requested.get(script.name) or requested.get(strip_script_extension(script.name))
+        if explicit and _Path(explicit).exists():
+            resolved[script.name] = explicit
+            continue
+
+        detected = detect_referenced_scripts(script.description, search_dirs)
+        if detected:
+            resolved[script.name] = detected[0]
+
+    return resolved
+
+
+def _prepend_fallback_note(usage: str | None, reason: str) -> str:
+    """Inject fallback explanation into usage instructions."""
+    note = f"Fallback mode: {reason}"
+    if not usage:
+        return f"## Notes\n{note}"
+    if "## Notes" in usage:
+        return usage.replace("## Notes", f"## Notes\n{note}\n", 1)
+    return f"{usage}\n\n## Notes\n{note}"
+
+
+def _file_type_value(file_type: object) -> str:
+    if hasattr(file_type, "value"):
+        return str(getattr(file_type, "value"))
+    return str(file_type)
+
+
+def _infer_read_number(filename: str) -> int | None:
+    match = re.search(r"_R([12])(?:_|\.|$)", filename, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _infer_lane_from_filename(filename: str) -> str | None:
+    match = re.search(r"(L\d{3})", filename, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).upper()
+
+
+def _infer_sample_key(filename: str) -> str:
+    token = re.split(r"_L\d{3}_R[12]_|_R[12]_", filename, maxsplit=1)[0]
+    token = token.strip("_")
+    return token or filename
+
+
+def _path_with_lane_template(path: str, lane: str) -> str:
+    if lane and lane in path:
+        return path.replace(lane, "${LANE}", 1)
+    return path
+
+
+def _script_filename(script: GeneratedScript) -> str:
+    ext_map = {
+        ScriptType.PYTHON: ".py",
+        ScriptType.BASH: ".sh",
+        ScriptType.R: ".R",
+    }
+    expected_ext = ext_map.get(script.script_type, ".py")
+    if script.name.lower().endswith(expected_ext.lower()):
+        return script.name
+    return f"{strip_script_extension(script.name)}{expected_ext}"
+
+
+def _extract_cli_flags(code: str) -> list[str]:
+    if not code:
+        return []
+    flags: list[str] = []
+    pattern = re.compile(r"add_argument\((.*?)\)", flags=re.DOTALL)
+    for match in pattern.finditer(code):
+        blob = match.group(1)
+        for flag in re.findall(r"""['"](--[a-zA-Z0-9][a-zA-Z0-9_-]*)['"]""", blob):
+            if flag not in flags:
+                flags.append(flag)
+    return flags
+
+
+def _find_auxiliary_file_path(
+    manifest: object | None,
+    tokens: tuple[str, ...],
+    suffixes: tuple[str, ...] = (),
+) -> str | None:
+    scan_result = getattr(manifest, "scan_result", None)
+    files = getattr(scan_result, "files", None) if scan_result else None
+    if not files:
+        return None
+
+    lowered_tokens = tuple(t.lower() for t in tokens)
+    lowered_suffixes = tuple(s.lower() for s in suffixes)
+    for file_meta in files:
+        filename = str(getattr(file_meta, "filename", "")).lower()
+        if not filename:
+            continue
+        if not all(token in filename for token in lowered_tokens):
+            continue
+        if lowered_suffixes and not filename.endswith(lowered_suffixes):
+            continue
+        path = getattr(file_meta, "path", None)
+        if path:
+            return str(path)
+    return None
+
+
+def _extract_fastq_context(
+    manifest: object | None,
+) -> tuple[list[str], str | None, str | None, str | None, str | None]:
+    scan_result = getattr(manifest, "scan_result", None)
+    files = getattr(scan_result, "files", None) if scan_result else None
+    if not files:
+        return [], None, None, None, None
+
+    sample_lane_reads: dict[str, dict[str, dict[int, str]]] = {}
+    first_r1: str | None = None
+    first_r2: str | None = None
+
+    for file_meta in files:
+        file_type = _file_type_value(getattr(file_meta, "file_type", ""))
+        if file_type != "fastq":
+            continue
+
+        filename = str(getattr(file_meta, "filename", ""))
+        path = str(getattr(file_meta, "path", ""))
+        if not path:
+            continue
+
+        read_number = getattr(file_meta, "read_number", None) or _infer_read_number(filename)
+        if read_number == 1 and not first_r1:
+            first_r1 = path
+        if read_number == 2 and not first_r2:
+            first_r2 = path
+
+        lane = getattr(file_meta, "lane", None) or _infer_lane_from_filename(filename)
+        if lane is None or read_number not in (1, 2):
+            continue
+
+        sample = getattr(file_meta, "sample_name", None) or _infer_sample_key(filename)
+        lane_map = sample_lane_reads.setdefault(sample, {})
+        read_map = lane_map.setdefault(lane, {})
+        read_map[read_number] = path
+
+    best_sample_lanes: dict[str, dict[int, str]] = {}
+    for lane_map in sample_lane_reads.values():
+        complete = {lane: reads for lane, reads in lane_map.items() if 1 in reads and 2 in reads}
+        if len(complete) > len(best_sample_lanes):
+            best_sample_lanes = complete
+
+    if best_sample_lanes:
+        lanes = sorted(best_sample_lanes.keys())
+        first_lane = lanes[0]
+        first_pair = best_sample_lanes[first_lane]
+        r1_template = _path_with_lane_template(first_pair[1], first_lane)
+        r2_template = _path_with_lane_template(first_pair[2], first_lane)
+        return lanes, r1_template, r2_template, first_r1, first_r2
+
+    return [], None, None, first_r1, first_r2
+
+
+def _existing_usage_notes(usage_instructions: str | None) -> str:
+    text = (usage_instructions or "").strip()
+    if not text:
+        return ""
+    if "## Run Commands" in text and "## Notes" in text:
+        return text.split("## Notes", 1)[1].strip()
+    if "## Run Commands" in text:
+        return ""
+    return text
+
+
+def _build_script_command_lines(
+    script: GeneratedScript,
+    index: int,
+    lane_mode: bool,
+    indent: str,
+) -> list[str]:
+    script_file = _script_filename(script)
+    script_stem = strip_script_extension(script_file)
+    step_out_var = f"STEP_{index + 1}_OUT"
+    step_stats_var = f"STEP_{index + 1}_STATS"
+    lane_suffix = "${LANE}." if lane_mode else ""
+    output_path = f"generated_outputs/{lane_suffix}{script_stem}.tsv.gz"
+    stats_path = f"generated_outputs/{lane_suffix}{script_stem}.stats.tsv.gz"
+
+    if script.script_type == ScriptType.PYTHON:
+        binary = f"python scripts/{script_file}"
+    elif script.script_type == ScriptType.BASH:
+        binary = f"bash scripts/{script_file}"
+    else:
+        binary = f"Rscript scripts/{script_file}"
+
+    args: list[str] = []
+    has_input = False
+    has_output = False
+    needs_stats = False
+    flags = _extract_cli_flags(script.code)
+
+    for flag in flags:
+        key = flag.lstrip("-").lower()
+        value: str | None = None
+
+        if "whitelist" in key:
+            value = "${WHITELIST}"
+        elif "oligo" in key and "tsv" in key:
+            value = "${OLIGO_TSV}"
+        elif "hashtag" in key and "tsv" in key:
+            value = "${HASHTAG_TSV}"
+        elif key in {"r1", "read1"} or "read1" in key or re.search(r"(^|_)r1($|_)", key):
+            has_input = True
+            value = "${R1}"
+        elif key in {"r2", "read2"} or "read2" in key or re.search(r"(^|_)r2($|_)", key):
+            has_input = True
+            value = "${R2}"
+        elif "lane" in key:
+            value = "${LANE}"
+        elif "stats" in key and ("out" in key or "output" in key):
+            has_output = True
+            needs_stats = True
+            value = f"${{{step_stats_var}}}"
+        elif "out" in key or "output" in key:
+            has_output = True
+            value = f"${{{step_out_var}}}"
+        elif "input" in key or "fastq" in key or key.endswith("_in"):
+            has_input = True
+            value = "${PREV_OUT}" if index > 0 else ("${R2}" if lane_mode else "${R2:-${R1}}")
+
+        if value:
+            args.append(f'{flag} "{value}"')
+
+    if not has_input:
+        default_input = "${PREV_OUT}" if index > 0 else ("${R2}" if lane_mode else "${R2:-${R1}}")
+        args.append(f'--input "{default_input}"')
+
+    if not has_output:
+        args.append(f'--out "${{{step_out_var}}}"')
+
+    lines = [
+        f'{indent}{step_out_var}="{output_path}"',
+    ]
+    if needs_stats:
+        lines.append(f'{indent}{step_stats_var}="{stats_path}"')
+
+    lines.append(f"{indent}{binary} \\")
+    for i, arg in enumerate(args):
+        suffix = " \\" if i < len(args) - 1 else ""
+        lines.append(f"{indent}  {arg}{suffix}")
+    lines.append(f'{indent}PREV_OUT="${{{step_out_var}}}"')
+    return lines
+
+
+def _build_run_commands(plan: ScriptPlan, manifest: object | None) -> str:
+    runnable_scripts = [s for s in plan.scripts if (s.code or "").strip()]
+    if not runnable_scripts:
+        return ""
+
+    lanes, r1_template, r2_template, first_r1, first_r2 = _extract_fastq_context(manifest)
+    whitelist_path = _find_auxiliary_file_path(manifest, ("whitelist",))
+    oligo_tsv_path = _find_auxiliary_file_path(manifest, ("oligo",), (".tsv",))
+    hashtag_tsv_path = _find_auxiliary_file_path(manifest, ("hashtag",), (".tsv",))
+    script_names = ", ".join(_script_filename(s) for s in runnable_scripts)
+
+    lines = [
+        "mkdir -p generated_outputs",
+        "",
+        f'WHITELIST="{whitelist_path or "<path_to_whitelist.txt>"}"',
+        f'OLIGO_TSV="{oligo_tsv_path or "<path_to_oligo.tsv>"}"',
+        f'HASHTAG_TSV="{hashtag_tsv_path or "<path_to_hashtag.tsv>"}"',
+        "",
+        f"# Generated script(s): {script_names}",
+    ]
+
+    if lanes and r1_template and r2_template:
+        lines.extend(
+            [
+                f"# Lanes present: {' '.join(lanes)}",
+                f"for LANE in {' '.join(lanes)}; do",
+                f'  R1="{r1_template}"',
+                f'  R2="{r2_template}"',
+                '  PREV_OUT=""',
+            ]
+        )
+        for index, script in enumerate(runnable_scripts):
+            lines.append(f"  # {index + 1}. {_script_filename(script)}")
+            lines.extend(_build_script_command_lines(script, index, lane_mode=True, indent="  "))
+            lines.append("")
+        lines.append("done")
+    else:
+        if first_r1:
+            lines.append(f'R1="{first_r1}"')
+        if first_r2:
+            lines.append(f'R2="{first_r2}"')
+        lines.append('PREV_OUT=""')
+        lines.append("")
+        for index, script in enumerate(runnable_scripts):
+            lines.append(f"# {index + 1}. {_script_filename(script)}")
+            lines.extend(_build_script_command_lines(script, index, lane_mode=False, indent=""))
+            lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def _build_usage_instructions(plan: ScriptPlan, manifest: object | None) -> str | None:
+    run_commands = _build_run_commands(plan, manifest)
+    if not run_commands:
+        return plan.usage_instructions
+
+    notes = _existing_usage_notes(plan.usage_instructions)
+    parts = [
+        "## Run Commands",
+        "",
+        "```bash",
+        run_commands,
+        "```",
+    ]
+    if notes:
+        parts.extend(["", "## Notes", notes])
+    else:
+        parts.extend(
+            [
+                "",
+                "## Notes",
+                "These commands are auto-generated from scanned files and script CLI flags.",
+                "If needed, confirm options with `python scripts/<script_name>.py --help`.",
+            ]
+        )
+    return "\n".join(parts).strip()
+
+
 def _delete_script_files(scripts_dir: Path) -> None:
     """Delete script files from scripts directory."""
     for ext in (".py", ".sh", ".R", ".r"):
@@ -669,6 +1037,10 @@ async def generate_all_code_endpoint(request: GenerateAllCodeRequest):
     understanding = understanding_store.load(request.manifest_id)
     if not understanding:
         raise HTTPException(400, "Understanding not found")
+
+    manifest_store = get_manifest_store()
+    manifest = manifest_store.load(request.manifest_id)
+    file_list = [f.path for f in manifest.scan_result.files] if (manifest and manifest.scan_result) else []
     
     # Get output directory
     working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
@@ -682,16 +1054,65 @@ async def generate_all_code_endpoint(request: GenerateAllCodeRequest):
     generated = []
     failed = []
     
-    ref_paths = request.reference_script_paths or {}
     search_dirs = _get_search_dirs(request.manifest_id)
+    reference_map = _build_reference_script_map(plan, request.reference_script_paths, search_dirs)
 
-    for i, script in enumerate(plan.scripts):
+    output_dirs_by_script = {
+        script.name: str(run_manager.stage_path(f"02_{script.category.value}"))
+        for script in plan.scripts
+    }
+    strategy = _load_analysis_strategy(request.manifest_id)
+
+    fallback_reason: str | None = None
+
+    # Preferred path: generate all code + usage instructions in one inference,
+    # conditioned on analysis strategy.
+    if strategy is not None:
+        try:
+            code_by_name, usage_instructions = await generate_all_script_code_with_usage(
+                plan=plan,
+                understanding=understanding,
+                file_list=file_list,
+                output_dirs_by_script=output_dirs_by_script,
+                analysis_strategy=strategy,
+                client=client,
+                reference_script_paths=reference_map,
+            )
+            for script in plan.scripts:
+                script.code = code_by_name[script.name]
+                save_script_to_disk(request.manifest_id, script)
+                generated.append(script.name)
+
+            plan.usage_instructions = usage_instructions
+            save_plan_to_disk(request.manifest_id, plan)
+
+            scripts_dir = get_scripts_dir(request.manifest_id)
+            return GenerateAllCodeResponse(
+                manifest_id=request.manifest_id,
+                generated=generated,
+                failed=failed,
+                scripts_dir=str(scripts_dir),
+            )
+        except Exception as exc:
+            fallback_reason = (
+                "Batched code+usage generation failed; "
+                f"using fallback generation path. Details: {exc}"
+            )
+            logger.warning(
+                "Falling back to per-script generation for %s: %s",
+                request.manifest_id,
+                exc,
+            )
+    else:
+        fallback_reason = (
+            "Analysis strategy was not found; using fallback generation path."
+        )
+
+    # Fallback path: per-script generation + deterministic usage instructions.
+    for script in plan.scripts:
         try:
             output_dir = run_manager.stage_path(f"02_{script.category.value}")
-            # Look up reference by script name (with or without extension)
-            ref_path = ref_paths.get(script.name) or ref_paths.get(
-                strip_script_extension(script.name)
-            )
+            ref_path = reference_map.get(script.name)
             code = await generate_script_code(
                 script,
                 understanding,
@@ -712,6 +1133,10 @@ async def generate_all_code_endpoint(request: GenerateAllCodeRequest):
             failed.append(f"{script.name}: {str(e)}")
     
     # Update plan on disk with all generated code
+    usage = _build_usage_instructions(plan, manifest)
+    if fallback_reason:
+        usage = _prepend_fallback_note(usage, fallback_reason)
+    plan.usage_instructions = usage
     save_plan_to_disk(request.manifest_id, plan)
     
     scripts_dir = get_scripts_dir(request.manifest_id)

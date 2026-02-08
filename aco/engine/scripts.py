@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from aco.engine.gemini import GeminiClient, get_gemini_client
-from aco.engine.models import ExperimentUnderstanding
+from aco.engine.models import AnalysisStrategy, ExperimentUnderstanding
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,9 @@ class ScriptPlanSchema(BaseModel):
     total_estimated_runtime: str | None = Field(
         default=None, description="Total estimated runtime"
     )
+    usage_instructions: str | None = Field(
+        default=None, description="Instructions on how to use the generated scripts"
+    )
 
 
 class ScriptPlan(BaseModel):
@@ -114,8 +117,38 @@ class ScriptPlan(BaseModel):
     total_estimated_runtime: str | None = Field(
         default=None, description="Total estimated runtime"
     )
+    usage_instructions: str | None = Field(
+        default=None, description="Instructions on how to use the generated scripts"
+    )
     generated_at: datetime = Field(default_factory=datetime.now)
     is_approved: bool = Field(default=False)
+
+
+class BatchedGeneratedScriptCode(BaseModel):
+    """A generated script code block keyed by planned script name."""
+
+    name: str = Field(..., description="Script name matching the plan entry")
+    code: str = Field(..., description="Complete runnable script code")
+
+
+class BatchedCodeAndUsageSchema(BaseModel):
+    """Schema for generating all script codes + runbook in one inference."""
+
+    scripts: list[BatchedGeneratedScriptCode] = Field(
+        default_factory=list,
+        description="Generated code for each planned script",
+    )
+    usage_instructions: str = Field(
+        ...,
+        description=(
+            "Markdown usage guide with at least '## Run Commands' (bash block) "
+            "and '## Notes' sections."
+        ),
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Optional caveats or assumptions made while generating commands",
+    )
 
 
 # Check dependency availability
@@ -199,6 +232,15 @@ For each script, specify:
 - Input patterns using GLOB SYNTAX (e.g. "gex_fastq/*_R1_*.fastq.gz", NOT full paths)
 - Output files (just filenames, not full paths)
 - Execution order
+
+Also provide **Usage Instructions** that show a user how to run these scripts in sequence,
+including setting up variables for input files if needed. Example:
+
+```bash
+mkdir -p qc_results
+VAR="path/to/files"
+python scripts/qc_script.py --input "$VAR" ...
+```
 
 **CRITICAL**: Keep input_patterns SHORT using glob patterns. Do NOT list individual files.
 Focus on scripts that can actually be run with the available files.
@@ -392,6 +434,56 @@ useful patterns from the reference.
 Reference file: {reference_name}
 """
 
+SCRIPT_BATCH_GENERATION_SYSTEM = """You are an expert bioinformatics programmer.
+
+Generate code for ALL planned scripts plus a practical runbook in one response.
+
+Requirements:
+1. Return valid JSON only.
+2. Script names MUST exactly match planned script names.
+3. Each script's code must be complete, runnable, and production-quality.
+4. `usage_instructions` must be markdown with:
+   - `## Run Commands`
+   - a fenced bash block
+   - `## Notes`
+5. Include strategy-aware pre/post commands when strategy execution plan implies
+   setup/validation/finalization steps before/after running generated scripts.
+6. Use concrete files/lanes when inferable from provided file context. Otherwise
+   use clear placeholder variables.
+"""
+
+
+SCRIPT_BATCH_PROMPT = """Generate all script code and usage commands in a single response.
+
+# Experiment Context
+{understanding_json}
+
+# Analysis Strategy (Suggested Execution Plan)
+{strategy_json}
+
+# Planned Scripts
+{planned_scripts_json}
+
+# Output Directories Per Script
+{output_dirs_json}
+
+# Available Files (sample)
+{file_list_summary}
+
+# Reference Script Mapping
+{reference_mapping}
+
+# Instructions
+1. Generate full runnable code for each planned script.
+2. Keep script names unchanged.
+3. Use the strategy execution plan to include any meaningful setup/cleanup
+   commands before or after running generated scripts.
+4. In `usage_instructions`, include concrete commands to run the generated scripts
+   in sequence.
+5. Prefer concrete lane/file variables if inferable from file context.
+6. Return JSON only.
+"""
+
 # Extensions considered as scripts when scanning descriptions
 _SCRIPT_FILENAME_RE_PATTERN = r"""(?:['"`])([A-Za-z0-9_\-]+\.(?:py|R|r|sh|nf|wdl))(?:['"`])"""
 
@@ -470,6 +562,179 @@ def detect_referenced_scripts(
     return found
 
 
+def _summarize_file_list_for_prompt(
+    file_list: list[str],
+    max_dirs: int = 8,
+    max_files_per_dir: int = 4,
+) -> str:
+    """Summarize files by directory for prompt compactness."""
+    from collections import defaultdict
+    from pathlib import Path as PPath
+
+    if not file_list:
+        return "(no files available)"
+
+    dir_summary: dict[str, list[str]] = defaultdict(list)
+    for file_path in file_list:
+        p = PPath(file_path)
+        dir_summary[str(p.parent)].append(p.name)
+
+    lines: list[str] = []
+    for dir_path, files in list(dir_summary.items())[:max_dirs]:
+        lines.append(f"Directory: {dir_path}")
+        for fname in files[:max_files_per_dir]:
+            lines.append(f"  - {fname}")
+        if len(files) > max_files_per_dir:
+            lines.append(f"  - ... and {len(files) - max_files_per_dir} more files")
+    return "\n".join(lines)
+
+
+def _serialize_strategy_context(strategy: AnalysisStrategy | None) -> str:
+    """Serialize strategy context used to build runbook commands."""
+    if strategy is None:
+        return "(strategy not available)"
+
+    payload = {
+        "summary": strategy.summary,
+        "required_modules": strategy.required_modules,
+        "required_tools": strategy.required_tools,
+        "execution_plan": [
+            {
+                "name": step.name,
+                "description": step.description,
+                "tool_or_module": step.tool_or_module,
+                "depends_on": step.depends_on,
+                "is_deterministic": step.is_deterministic,
+                "estimated_runtime": step.estimated_runtime,
+            }
+            for step in strategy.execution_plan
+        ],
+        "gate_checklist": [
+            {
+                "gate_name": gate.gate_name,
+                "pass_criteria": gate.pass_criteria,
+                "fail_criteria": gate.fail_criteria,
+                "module_name": gate.module_name,
+                "priority": gate.priority,
+            }
+            for gate in strategy.gate_checklist
+        ],
+    }
+    return json.dumps(payload, indent=2, default=str)
+
+
+async def generate_all_script_code_with_usage(
+    plan: ScriptPlan,
+    understanding: ExperimentUnderstanding,
+    file_list: list[str],
+    output_dirs_by_script: dict[str, str],
+    analysis_strategy: AnalysisStrategy,
+    client: GeminiClient | None = None,
+    reference_script_paths: dict[str, str] | None = None,
+) -> tuple[dict[str, str], str]:
+    """Generate code for all scripts and usage instructions in one inference."""
+    if client is None:
+        client = get_gemini_client()
+
+    planned_scripts_payload = []
+    script_type_by_name: dict[str, ScriptType] = {}
+    for script in plan.scripts:
+        script_type_by_name[script.name] = script.script_type
+        planned_scripts_payload.append(
+            {
+                "name": script.name,
+                "category": script.category.value if hasattr(script.category, "value") else str(script.category),
+                "script_type": script.script_type.value if hasattr(script.script_type, "value") else str(script.script_type),
+                "description": script.description,
+                "dependencies": script.dependencies,
+                "input_files": script.input_files,
+                "output_files": script.output_files,
+                "estimated_runtime": script.estimated_runtime,
+            }
+        )
+
+    understanding_payload = {
+        "assay_name": understanding.assay_name,
+        "experiment_type": (
+            understanding.experiment_type.value
+            if hasattr(understanding.experiment_type, "value")
+            else str(understanding.experiment_type)
+        ),
+        "assay_platform": (
+            understanding.assay_platform.value
+            if hasattr(understanding.assay_platform, "value")
+            else str(understanding.assay_platform)
+        ),
+        "summary": understanding.summary,
+        "key_parameters": understanding.key_parameters,
+        "pipeline_parameters": understanding.pipeline_parameters,
+        "sample_count": understanding.sample_count,
+        "expected_cells_total": understanding.expected_cells_total,
+    }
+
+    reference_mapping = reference_script_paths or {}
+    reference_file_paths = sorted(set(reference_mapping.values()))
+    reference_mapping_text = (
+        json.dumps(reference_mapping, indent=2)
+        if reference_mapping
+        else "(none)"
+    )
+
+    prompt = SCRIPT_BATCH_PROMPT.format(
+        understanding_json=json.dumps(understanding_payload, indent=2, default=str),
+        strategy_json=_serialize_strategy_context(analysis_strategy),
+        planned_scripts_json=json.dumps(planned_scripts_payload, indent=2, default=str),
+        output_dirs_json=json.dumps(output_dirs_by_script, indent=2, default=str),
+        file_list_summary=_summarize_file_list_for_prompt(file_list),
+        reference_mapping=reference_mapping_text,
+    )
+
+    if reference_file_paths:
+        batched = await client.generate_structured_with_files_async(
+            prompt=prompt,
+            file_paths=reference_file_paths,
+            response_schema=BatchedCodeAndUsageSchema,
+            system_instruction=SCRIPT_BATCH_GENERATION_SYSTEM,
+            temperature=0.2,
+            max_output_tokens=32768,
+        )
+    else:
+        batched = await client.generate_structured_async(
+            prompt=prompt,
+            response_schema=BatchedCodeAndUsageSchema,
+            system_instruction=SCRIPT_BATCH_GENERATION_SYSTEM,
+            temperature=0.2,
+            max_output_tokens=32768,
+        )
+
+    expected_names = {s.name for s in plan.scripts}
+    code_by_name: dict[str, str] = {}
+    for item in batched.scripts:
+        if item.name not in script_type_by_name:
+            continue
+        script_type = script_type_by_name[item.name]
+        code = extract_code_from_response(item.code, script_type)
+        code = validate_script_code(code, script_type)
+        code_by_name[item.name] = code
+
+    missing = sorted(expected_names - set(code_by_name.keys()))
+    if missing:
+        raise ValueError(
+            "Batched generation did not return code for planned scripts: "
+            + ", ".join(missing)
+        )
+
+    usage_instructions = (batched.usage_instructions or "").strip()
+    if not usage_instructions:
+        raise ValueError("Batched generation returned empty usage_instructions")
+    if "## Run Commands" not in usage_instructions or "## Notes" not in usage_instructions:
+        raise ValueError(
+            "Batched generation returned usage_instructions missing required sections"
+        )
+
+    return code_by_name, usage_instructions
+
+
 async def generate_script_plan(
     understanding: ExperimentUnderstanding,
     file_list: list[str],
@@ -543,7 +808,8 @@ async def generate_script_plan(
         manifest_id=plan_schema.manifest_id,
         scripts=full_scripts,
         execution_order=plan_schema.execution_order,
-        total_estimated_runtime=plan_schema.total_estimated_runtime
+        total_estimated_runtime=plan_schema.total_estimated_runtime,
+        usage_instructions=plan_schema.usage_instructions
     )
 
 
