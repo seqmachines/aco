@@ -1,10 +1,11 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Settings as SettingsIcon, Moon, Sun, Key, Cpu, X, Eye, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { Settings as SettingsType } from "@/hooks/useSettings"
+import type { ConfigResponse } from "@/types"
 
 interface SettingsProps {
   isOpen: boolean
@@ -14,6 +15,8 @@ interface SettingsProps {
   theme: "light" | "dark"
   onToggleTheme: () => void
   availableModels: { id: string; name: string; description: string }[]
+  config: ConfigResponse | null
+  onRevealServerKey: () => Promise<string | null>
 }
 
 export function Settings({
@@ -24,9 +27,30 @@ export function Settings({
   theme,
   onToggleTheme,
   availableModels,
+  config,
+  onRevealServerKey,
 }: SettingsProps) {
   const [showApiKey, setShowApiKey] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState(settings.apiKey)
+  const [hasFetchedServerKey, setHasFetchedServerKey] = useState(false)
+
+  // Pre-populate with server key if user hasn't set one yet
+  useEffect(() => {
+    if (isOpen && !settings.apiKey && config?.has_api_key && !hasFetchedServerKey) {
+      setHasFetchedServerKey(true)
+      onRevealServerKey().then((key) => {
+        if (key) {
+          setApiKeyInput(key)
+          onUpdateSettings({ apiKey: key })
+        }
+      })
+    }
+  }, [isOpen, settings.apiKey, config?.has_api_key, hasFetchedServerKey, onRevealServerKey, onUpdateSettings])
+
+  // Sync apiKeyInput with settings when settings change externally
+  useEffect(() => {
+    setApiKeyInput(settings.apiKey)
+  }, [settings.apiKey])
 
   if (!isOpen) return null
 
@@ -101,9 +125,6 @@ export function Settings({
               <Key className="h-4 w-4" />
               Google API Key
             </Label>
-            <p className="text-sm text-muted-foreground">
-              Override the API key (leave empty to use server default)
-            </p>
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Input
@@ -129,8 +150,8 @@ export function Settings({
                 Save
               </Button>
             </div>
-            {settings.apiKey && (
-              <p className="text-xs text-success">Custom API key is set</p>
+            {(settings.apiKey || config?.has_api_key) && (
+              <p className="text-xs text-success">API key is configured</p>
             )}
           </div>
 

@@ -10,16 +10,29 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from aco.api.routes import (
+    analyze_router,
+    chat_router,
     intake_router,
     manifest_router,
+    notebooks_router,
+    reports_router,
+    runs_router,
     scan_router,
+    scripts_router,
     understanding_router,
 )
+from aco.api.routes.analyze import set_stores as set_analyze_stores
+from aco.api.routes.chat import set_stores as set_chat_stores
 from aco.api.routes.intake import set_store as set_intake_store
 from aco.api.routes.manifest import set_store as set_manifest_store
+from aco.api.routes.notebooks import set_stores as set_notebooks_stores
+from aco.api.routes.reports import set_stores as set_reports_stores
+from aco.api.routes.runs import set_stores as set_runs_stores
+from aco.api.routes.scripts import set_stores as set_scripts_stores
 from aco.api.routes.understanding import set_stores as set_understanding_stores
 from aco.engine import UnderstandingStore
 from aco.manifest import ManifestStore
+from aco.path_display import get_display_path, get_display_storage_path
 
 
 # Default storage directory
@@ -74,8 +87,14 @@ async def lifespan(app: FastAPI):
     understanding_store = UnderstandingStore(str(storage_dir / "understandings"))
     
     # Set stores on routers
+    set_analyze_stores(manifest_store, understanding_store)
+    set_chat_stores(manifest_store, understanding_store)
     set_intake_store(manifest_store)
     set_manifest_store(manifest_store)
+    set_notebooks_stores(manifest_store, understanding_store)
+    set_reports_stores(manifest_store, understanding_store)
+    set_runs_stores(manifest_store, understanding_store)
+    set_scripts_stores(manifest_store, understanding_store)
     set_understanding_stores(manifest_store, understanding_store)
     
     # Store references on app state for access elsewhere
@@ -84,7 +103,31 @@ async def lifespan(app: FastAPI):
     app.state.storage_dir = storage_dir
     app.state.working_dir = working_dir
     
-    print(f"aco API started. Storage: {storage_dir}, Working dir: {working_dir}")
+    display_working_dir = get_display_path(working_dir)
+    display_storage_dir = get_display_storage_path(storage_dir, working_dir)
+    print(
+        "aco API started. "
+        f"Storage: {display_storage_dir}, Working dir: {display_working_dir}"
+    )
+
+    # If launched from CLI, print the "Server Ready" message now that we are actually ready
+    cli_url = os.getenv("ACO_CLI_URL")
+    if cli_url:
+        from rich.console import Console
+        from rich.panel import Panel
+
+        console = Console()
+        console.print()
+        console.print(
+            Panel(
+                f"[bold green]Starting aco server...[/bold green]\n\n"
+                f"[link={cli_url}]{cli_url}[/link]\n\n"
+                f"[dim]Press Ctrl+C to stop the server[/dim]",
+                title="[green]Server Ready[/green]",
+                border_style="green",
+            )
+        )
+        console.print()
     
     yield
     
@@ -116,9 +159,15 @@ def create_app() -> FastAPI:
     )
     
     # Include API routers
+    app.include_router(analyze_router)
+    app.include_router(chat_router)
     app.include_router(intake_router)
     app.include_router(scan_router)
     app.include_router(manifest_router)
+    app.include_router(notebooks_router)
+    app.include_router(reports_router)
+    app.include_router(runs_router)
+    app.include_router(scripts_router)
     app.include_router(understanding_router)
     
     @app.get("/api/health")
@@ -127,11 +176,30 @@ def create_app() -> FastAPI:
         return {"status": "healthy"}
     
     @app.get("/api/config")
-    async def config():
-        """Get current configuration."""
+    async def config(reveal_key: bool = False):
+        """Get current configuration.
+        
+        Args:
+            reveal_key: If true, return the full API key (for display in settings)
+        """
+        import os
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+        
+        # Mask the key by default, showing only first 4 and last 4 chars
+        if api_key and not reveal_key:
+            if len(api_key) > 12:
+                masked_key = api_key[:4] + "*" * (len(api_key) - 8) + api_key[-4:]
+            else:
+                masked_key = "*" * len(api_key)
+        else:
+            masked_key = api_key if reveal_key else ""
+        
         return {
             "working_dir": str(get_working_dir()),
             "storage_dir": str(get_storage_dir()),
+            "has_api_key": bool(api_key),
+            "api_key_masked": masked_key if api_key else None,
+            "api_key": api_key if reveal_key and api_key else None,
         }
     
     # Serve frontend static files if available

@@ -13,6 +13,8 @@ import {
   ChevronDown,
   ChevronRight,
   X,
+  Code,
+  FileUp,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,12 +22,18 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Spinner } from "@/components/ui/spinner"
+import { ReadStructureVisualizer } from "@/components/ReadStructureVisualizer"
 import type { ExperimentUnderstanding, QualityConcern, RecommendedCheck } from "@/types"
+
+export interface UnderstandingGenerateOptions {
+  auto_include_detected_scripts?: boolean
+  reference_file_paths?: string[]
+}
 
 interface UnderstandingEditorProps {
   understanding: ExperimentUnderstanding | null
   isLoading: boolean
-  onRegenerate: () => void
+  onRegenerate: (options?: UnderstandingGenerateOptions) => void
   onApprove: (edits?: Record<string, string>) => void
 }
 
@@ -135,6 +143,7 @@ export function UnderstandingEditor({
   const [isEditing, setIsEditing] = useState(false)
   const [editedSummary, setEditedSummary] = useState("")
   const [editedAssayName, setEditedAssayName] = useState("")
+  const [includeScripts, setIncludeScripts] = useState(false)
 
   if (isLoading) {
     return (
@@ -323,6 +332,52 @@ export function UnderstandingEditor({
         </Card>
       </div>
 
+      {/* Read Structure Visualization -- primary (GEX) */}
+      {understanding.read_structure && (
+        <ReadStructureVisualizer readStructure={understanding.read_structure} />
+      )}
+
+      {/* Additional read structures (CITE-seq, ADT, HTO, ATAC, VDJ, etc.) */}
+      {understanding.additional_read_structures?.length > 0 &&
+        understanding.additional_read_structures.map((rs, i) => (
+          <ReadStructureVisualizer key={i} readStructure={rs} />
+        ))
+      }
+
+      {/* Detected Scripts */}
+      {understanding.detected_scripts && understanding.detected_scripts.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Code className="h-4 w-4 text-accent" />
+              Detected Scripts ({understanding.detected_scripts.length})
+            </CardTitle>
+            <CardDescription>
+              Previously existing scripts found in the directory
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {understanding.detected_scripts.map((script, i) => (
+                <div key={i} className="p-3 rounded-lg border border-border bg-muted/20">
+                  <div className="flex items-center justify-between">
+                    <code className="text-sm font-mono">{script.filename || script.name}</code>
+                    {script.purpose && (
+                      <Badge variant="outline" className="text-xs">
+                        {script.purpose}
+                      </Badge>
+                    )}
+                  </div>
+                  {script.description && (
+                    <p className="text-sm text-muted-foreground mt-1">{script.description}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Quality Concerns */}
       {understanding.quality_concerns.length > 0 && (
         <Card>
@@ -391,10 +446,32 @@ export function UnderstandingEditor({
 
       {/* Actions */}
       <div className="flex justify-between items-center pt-4 border-t border-border">
-        <Button variant="outline" onClick={onRegenerate} disabled={isLoading}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Regenerate
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            onClick={() =>
+              onRegenerate(
+                includeScripts
+                  ? { auto_include_detected_scripts: true }
+                  : undefined,
+              )
+            }
+            disabled={isLoading}
+          >
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Regenerate
+          </Button>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={includeScripts}
+              onChange={(e) => setIncludeScripts(e.target.checked)}
+              className="rounded border-border"
+            />
+            <FileUp className="h-3 w-3" />
+            Include detected scripts
+          </label>
+        </div>
 
         <div className="flex items-center gap-2">
           {isEditing ? (
@@ -416,11 +493,19 @@ export function UnderstandingEditor({
               </Button>
               <Button
                 onClick={handleApprove}
-                disabled={understanding.is_approved}
                 className="glow-accent"
               >
-                <Check className="h-4 w-4 mr-2" />
-                {understanding.is_approved ? "Approved" : "Approve"}
+                {understanding.is_approved ? (
+                  <>
+                    <ChevronRight className="h-4 w-4 mr-2" />
+                    Proceed to Analyze
+                  </>
+                ) : (
+                  <>
+                    <Check className="h-4 w-4 mr-2" />
+                    Approve
+                  </>
+                )}
               </Button>
             </>
           )}

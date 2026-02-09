@@ -1,6 +1,7 @@
 """Gemini API client wrapper with structured output support."""
 
 import json
+import logging
 import os
 from typing import TypeVar
 
@@ -9,6 +10,8 @@ from google.genai import types
 from pydantic import BaseModel
 
 from aco.engine.models import ExperimentUnderstanding
+
+logger = logging.getLogger(__name__)
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -29,11 +32,11 @@ class GeminiClient:
             api_key: Google AI API key (defaults to GOOGLE_API_KEY env var)
             model_name: Model to use for generation
         """
-        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.api_key = api_key or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError(
-                "Google API key required. Set GOOGLE_API_KEY environment variable "
-                "or pass api_key parameter."
+                "Google API key required. Set GOOGLE_API_KEY or GEMINI_API_KEY "
+                "environment variable or pass api_key parameter."
             )
         
         self.client = genai.Client(api_key=self.api_key)
@@ -140,6 +143,163 @@ Respond ONLY with the JSON object, no additional text or markdown formatting.
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse JSON response: {e}\nResponse: {response.text}")
     
+    # -----------------------------------------------------------------
+    # File-aware generation (Gemini Files API)
+    # -----------------------------------------------------------------
+
+    def upload_file(self, file_path: str) -> types.File:
+        """Upload a file via the Gemini Files API.
+
+        Args:
+            file_path: Local path to the file to upload.
+
+        Returns:
+            A ``google.genai.types.File`` reference that can be passed as
+            part of ``contents`` in a generation call.
+
+        Raises:
+            FileNotFoundError: If *file_path* does not exist.
+        """
+        from pathlib import Path
+
+        p = Path(file_path)
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        logger.info("Uploading file to Gemini Files API: %s", file_path)
+        uploaded = self.client.files.upload(file=file_path)
+        logger.info("Uploaded %s -> %s", file_path, uploaded.name)
+        return uploaded
+
+    def _upload_files(self, file_paths: list[str]) -> list[types.File]:
+        """Upload multiple files and return their references."""
+        uploaded: list[types.File] = []
+        for path in file_paths:
+            try:
+                uploaded.append(self.upload_file(path))
+            except FileNotFoundError:
+                logger.warning("Skipping missing file: %s", path)
+        return uploaded
+
+    def generate_with_files(
+        self,
+        prompt: str,
+        file_paths: list[str],
+        system_instruction: str | None = None,
+        temperature: float = 0.7,
+        max_output_tokens: int = 8192,
+    ) -> str:
+        """Generate text from a prompt augmented with uploaded files.
+
+        Files are uploaded via the Gemini Files API and included as part
+        of the ``contents`` list so the model can read their contents.
+
+        Args:
+            prompt: The text prompt / instructions.
+            file_paths: Local paths to files to upload and include.
+            system_instruction: Optional system instruction.
+            temperature: Sampling temperature.
+            max_output_tokens: Maximum output length.
+
+        Returns:
+            Generated text.
+        """
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            system_instruction=system_instruction,
+        )
+
+        # Build contents: uploaded file refs first, then text prompt
+        contents: list = []
+        contents.extend(self._upload_files(file_paths))
+        contents.append(prompt)
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=contents,
+            config=config,
+        )
+
+        return response.text
+
+    def generate_structured_with_files(
+        self,
+        prompt: str,
+        file_paths: list[str],
+        response_schema: type[T],
+        system_instruction: str | None = None,
+        temperature: float = 0.3,
+        max_output_tokens: int = 8192,
+    ) -> T:
+        """Generate structured output augmented with uploaded files.
+
+        Combines the Files API with JSON-schema-constrained output.
+
+        Args:
+            prompt: The text prompt / instructions.
+            file_paths: Local paths to files to upload and include.
+            response_schema: Pydantic model class for the response.
+            system_instruction: Optional system instruction.
+            temperature: Sampling temperature.
+            max_output_tokens: Maximum output length.
+
+        Returns:
+            Instance of *response_schema* populated with generated data.
+        """
+        schema = response_schema.model_json_schema()
+
+        schema_prompt = f"""
+{prompt}
+
+You must respond with valid JSON that conforms to this schema:
+```json
+{json.dumps(schema, indent=2)}
+```
+
+Respond ONLY with the JSON object, no additional text or markdown formatting.
+"""
+
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+        )
+
+        # Build contents: uploaded file refs first, then schema prompt
+        contents: list = []
+        contents.extend(self._upload_files(file_paths))
+        contents.append(schema_prompt)
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=contents,
+            config=config,
+        )
+
+        # Parse the JSON response
+        try:
+            text = response.text.strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                text = "\n".join(lines)
+
+            data = json.loads(text)
+            return response_schema.model_validate(data)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Failed to parse JSON response: {e}\nResponse: {response.text}"
+            )
+
+    # -----------------------------------------------------------------
+    # Async wrappers
+    # -----------------------------------------------------------------
+
     async def generate_async(
         self,
         prompt: str,
@@ -172,6 +332,48 @@ Respond ONLY with the JSON object, no additional text or markdown formatting.
         return await asyncio.to_thread(
             self.generate_structured,
             prompt,
+            response_schema,
+            system_instruction,
+            temperature,
+            max_output_tokens,
+        )
+
+    async def generate_with_files_async(
+        self,
+        prompt: str,
+        file_paths: list[str],
+        system_instruction: str | None = None,
+        temperature: float = 0.7,
+        max_output_tokens: int = 8192,
+    ) -> str:
+        """Async version of generate_with_files."""
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.generate_with_files,
+            prompt,
+            file_paths,
+            system_instruction,
+            temperature,
+            max_output_tokens,
+        )
+
+    async def generate_structured_with_files_async(
+        self,
+        prompt: str,
+        file_paths: list[str],
+        response_schema: type[T],
+        system_instruction: str | None = None,
+        temperature: float = 0.3,
+        max_output_tokens: int = 8192,
+    ) -> T:
+        """Async version of generate_structured_with_files."""
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.generate_structured_with_files,
+            prompt,
+            file_paths,
             response_schema,
             system_instruction,
             temperature,

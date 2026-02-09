@@ -75,14 +75,14 @@ export function ManifestViewer({
         <div>
           <h2 className="text-xl font-semibold flex items-center gap-2">
             <FileJson className="h-5 w-5 text-primary" />
-            Manifest Review
+            Run Data Review
           </h2>
           <p className="text-sm text-muted-foreground">
             Review and edit your experiment information before analysis
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline">{manifest.id}</Badge>
+          <Badge variant="outline">Run: {manifest.id}</Badge>
           <Badge variant={manifest.status === "draft" ? "warning" : "success"}>
             {manifest.status}
           </Badge>

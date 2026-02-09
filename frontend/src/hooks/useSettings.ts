@@ -11,10 +11,10 @@ const DEFAULT_SETTINGS: Settings = {
 }
 
 const AVAILABLE_MODELS = [
-  { id: "gemini-3-pro-preview", name: "Gemini 3 Pro", description: "Latest and most capable" },
-  { id: "gemini-2.5-pro-preview-06-05", name: "Gemini 2.5 Pro", description: "Very capable" },
-  { id: "gemini-2.5-flash-preview-05-20", name: "Gemini 2.5 Flash", description: "Fast with great quality" },
-  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", description: "Fast and efficient" },
+  { id: "gemini-3-pro-preview", name: "Gemini 3 Pro", description: "Broad reasoning across modalities" },
+  { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", description: "Pro-level intelligence at speed" },
+  { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", description: "Advanced reasoning (Stable)" },
+  { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", description: "Fast and balanced (Stable)" },
 ]
 
 export function useSettings() {

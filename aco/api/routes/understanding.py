@@ -1,7 +1,10 @@
 """Understanding routes for LLM-driven experiment analysis."""
 
+import logging
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from aco.engine import (
     ExperimentUnderstanding,
@@ -11,8 +14,12 @@ from aco.engine import (
 )
 from aco.manifest import ManifestStore
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/understanding", tags=["understanding"])
+
+# Script extensions used when auto-discovering reference files
+_SCRIPT_EXTENSIONS = {".py", ".R", ".r", ".sh", ".nf", ".wdl"}
 
 
 class UnderstandingRequest(BaseModel):
@@ -20,6 +27,23 @@ class UnderstandingRequest(BaseModel):
     
     manifest_id: str
     regenerate: bool = False
+    model: str | None = None
+    api_key: str | None = None
+    reference_file_paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional list of local file paths to upload via the Gemini "
+            "Files API so the model can read their contents for richer "
+            "experiment understanding."
+        ),
+    )
+    auto_include_detected_scripts: bool = Field(
+        default=False,
+        description=(
+            "When True, automatically include script files (.py, .R, .sh, "
+            "etc.) discovered during the file scan as reference files."
+        ),
+    )
 
 
 class UnderstandingResponse(BaseModel):
@@ -101,8 +125,38 @@ async def generate_understanding_endpoint(
         )
     
     try:
+        # Determine which client to use
+        client = None
+        api_key_to_use = request.api_key.strip() if request.api_key and request.api_key.strip() else None
+        
+        if api_key_to_use or request.model:
+            from aco.engine import GeminiClient
+            client = GeminiClient(
+                api_key=api_key_to_use,
+                model_name=request.model or "gemini-3-pro-preview"
+            )
+
+        # Collect reference file paths
+        ref_paths = list(request.reference_file_paths)
+
+        if request.auto_include_detected_scripts and manifest.scan_result:
+            detected = _collect_detected_scripts(manifest)
+            logger.info(
+                "Auto-including %d detected script(s) as reference files",
+                len(detected),
+            )
+            # Merge, avoiding duplicates
+            existing = set(ref_paths)
+            for p in detected:
+                if p not in existing:
+                    ref_paths.append(p)
+
         # Generate understanding
-        understanding = await generate_understanding_async(manifest)
+        understanding = await generate_understanding_async(
+            manifest,
+            client=client,
+            reference_file_paths=ref_paths or None,
+        )
         
         # Save it
         understanding_store.save(request.manifest_id, understanding)
@@ -182,3 +236,41 @@ async def delete_understanding(manifest_id: str) -> dict:
         )
     
     return {"message": f"Understanding for {manifest_id} deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _collect_detected_scripts(manifest) -> list[str]:
+    """Return paths of script files found in the manifest scan result.
+
+    Only files whose extension is in ``_SCRIPT_EXTENSIONS`` and that
+    actually exist on disk are returned.
+    """
+    if not manifest.scan_result:
+        return []
+
+    paths: list[str] = []
+    for f in manifest.scan_result.files:
+        p = Path(f.path)
+        if p.suffix.lower() in _SCRIPT_EXTENSIONS and p.exists():
+            paths.append(f.path)
+
+    # Also check inside scanned directories for scripts
+    if manifest.user_intake.target_directory:
+        data_dir = Path(manifest.user_intake.target_directory)
+        if data_dir.exists():
+            for ext in _SCRIPT_EXTENSIONS:
+                for script_file in data_dir.rglob(f"*{ext}"):
+                    sp = str(script_file)
+                    if sp not in paths:
+                        # Skip __pycache__ and hidden dirs
+                        if any(
+                            part.startswith(".") or part == "__pycache__"
+                            for part in script_file.parts
+                        ):
+                            continue
+                        paths.append(sp)
+
+    return paths

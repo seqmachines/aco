@@ -11,11 +11,15 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from aco.path_display import get_display_path
+
 console = Console()
 app = typer.Typer(
     name="aco",
     help="aco - Agentic Sequencing Quality Control\n\nAutomate sequencing QC with LLM-driven experiment understanding.",
     add_completion=False,
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
@@ -51,16 +55,19 @@ def save_api_key_to_config(api_key: str) -> bool:
 
 def get_or_prompt_api_key() -> str | None:
     """Get API key from environment, saved config, or prompt user."""
-    # Check environment first
-    api_key = os.getenv("GOOGLE_API_KEY")
+    # Check environment first (support both common env var names)
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if api_key:
+        env_var = "GOOGLE_API_KEY" if os.getenv("GOOGLE_API_KEY") else "GEMINI_API_KEY"
+        console.print(f"[dim]Using API key from {env_var} environment variable[/dim]")
+        os.environ["GOOGLE_API_KEY"] = api_key  # Ensure it's set for google-genai SDK
         return api_key
     
     # Check saved config
     api_key = load_saved_api_key()
     if api_key:
         os.environ["GOOGLE_API_KEY"] = api_key
-        console.print(f"[dim]Using saved API key from ~/.aco/config[/dim]")
+        console.print("[dim]Using saved API key from ~/.aco/config[/dim]")
         return api_key
     
     console.print()
@@ -120,6 +127,7 @@ def init(
     Run this command from the directory containing your sequencing data.
     """
     cwd = Path.cwd()
+    display_cwd = get_display_path(cwd)
     
     # Check for Google API key - prompt if not set
     get_or_prompt_api_key()
@@ -129,7 +137,7 @@ def init(
     console.print(
         Panel(
             "[bold]aco[/bold] - Agentic Sequencing Quality Control\n"
-            f"[dim]Working directory: {cwd}[/dim]",
+            f"[dim]Working directory: {display_cwd}[/dim]",
             border_style="blue",
         )
     )
@@ -173,6 +181,9 @@ def init(
     os.environ["ACO_STORAGE_DIR"] = str(storage_dir)
     os.environ["ACO_WORKING_DIR"] = str(cwd)
     
+    # Create aco_runs directory if it doesn't exist (in current working directory)
+    (cwd / "aco_runs").mkdir(parents=True, exist_ok=True)
+    
     # Check if frontend is built
     # Check in package (installed mode)
     frontend_dist = Path(__file__).parent / "static"
@@ -208,15 +219,9 @@ def init(
     display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     url = f"http://{display_host}:{port}"
     
-    console.print(
-        Panel(
-            f"[bold green]Starting aco server...[/bold green]\n\n"
-            f"[link={url}]{url}[/link]\n\n"
-            f"[dim]Press Ctrl+C to stop the server[/dim]",
-            title="[green]Server Ready[/green]",
-            border_style="green",
-        )
-    )
+    # Pass startup details to the API process so it can print the ready message
+    os.environ["ACO_CLI_URL"] = url
+    
     console.print()
     
     # Open browser
