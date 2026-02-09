@@ -89,120 +89,32 @@ def get_understanding_store() -> UnderstandingStore:
     return _understanding_store
 
 
+def _summarize_disabled() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="Summarize phase is temporarily disabled. Notebook generation is unavailable.",
+    )
+
+
 @router.post("/generate", response_model=GenerateNotebookResponse)
 async def generate_notebook_endpoint(request: GenerateNotebookRequest):
-    """Generate a notebook based on experiment understanding and QC results."""
-    understanding_store = get_understanding_store()
-    
-    # Get understanding
-    understanding = understanding_store.load(request.manifest_id)
-    if not understanding:
-        raise HTTPException(400, "Understanding not generated yet")
-    
-    # Parse language
-    try:
-        language = NotebookLanguage(request.language.lower())
-    except ValueError:
-        raise HTTPException(400, f"Invalid language: {request.language}. Use 'python' or 'r'")
-    
-    # Get script results if available
-    script_results = _script_results.get(request.manifest_id, [])
-    
-    # Get output directory
-    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
-    run_manager = get_run_manager(Path(working_dir), request.manifest_id)
-    output_dir = run_manager.stage_path("05_notebook")
-    
-    # Create Gemini client
-    api_key = request.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    model = request.model or "gemini-2.5-flash"
-    
-    try:
-        client = GeminiClient(api_key=api_key, model_name=model)
-        notebook = await generate_notebook(
-            understanding=understanding,
-            script_results=script_results,
-            language=language,
-            output_dir=output_dir,
-            client=client,
-        )
-        
-        # Save notebook
-        saved_path = save_notebook(notebook, output_dir)
-        
-        # Cache notebook
-        _generated_notebooks[request.manifest_id] = notebook
-        
-        return GenerateNotebookResponse(
-            manifest_id=request.manifest_id,
-            notebook=notebook,
-            saved_path=str(saved_path),
-            message=f"Generated {language.value} notebook with {len(notebook.cells)} cells",
-        )
-    except Exception as e:
-        raise HTTPException(500, f"Failed to generate notebook: {str(e)}")
+    """Temporarily disabled while summarize phase is turned off."""
+    _summarize_disabled()
 
 
 @router.get("/{manifest_id}", response_model=GetNotebookResponse)
 async def get_notebook_endpoint(manifest_id: str, format: str | None = None):
-    """Get the generated notebook for a manifest."""
-    notebook = _generated_notebooks.get(manifest_id)
-    
-    if not notebook:
-        return GetNotebookResponse(
-            manifest_id=manifest_id,
-            notebook=None,
-            content=None,
-            format=None,
-        )
-    
-    # Convert to requested format
-    content = None
-    output_format = None
-    if format == "jupyter" or (format is None and notebook.language == NotebookLanguage.PYTHON):
-        import json
-        content = json.dumps(notebook_to_jupyter(notebook), indent=2)
-        output_format = "jupyter"
-    elif format == "rmarkdown" or (format is None and notebook.language == NotebookLanguage.R):
-        content = notebook_to_rmarkdown(notebook)
-        output_format = "rmarkdown"
-    
-    return GetNotebookResponse(
-        manifest_id=manifest_id,
-        notebook=notebook,
-        content=content,
-        format=output_format,
-    )
+    """Temporarily disabled while summarize phase is turned off."""
+    _summarize_disabled()
 
 
 @router.get("/list/{manifest_id}", response_model=ListNotebooksResponse)
 async def list_notebooks_endpoint(manifest_id: str):
-    """List all notebooks for a manifest."""
-    working_dir = os.getenv("ACO_WORKING_DIR", os.getcwd())
-    run_manager = get_run_manager(Path(working_dir), manifest_id)
-    notebook_dir = run_manager.stage_path("05_notebook")
-    
-    notebooks = []
-    if notebook_dir.exists():
-        for f in notebook_dir.iterdir():
-            if f.suffix in [".ipynb", ".Rmd"]:
-                notebooks.append({
-                    "name": f.stem,
-                    "path": str(f),
-                    "format": "jupyter" if f.suffix == ".ipynb" else "rmarkdown",
-                    "size_bytes": f.stat().st_size,
-                })
-    
-    return ListNotebooksResponse(
-        manifest_id=manifest_id,
-        notebooks=notebooks,
-    )
+    """Temporarily disabled while summarize phase is turned off."""
+    _summarize_disabled()
 
 
 @router.delete("/{manifest_id}")
 async def delete_notebook_endpoint(manifest_id: str):
-    """Delete the cached notebook for a manifest."""
-    if manifest_id in _generated_notebooks:
-        del _generated_notebooks[manifest_id]
-        return {"message": "Notebook cache cleared"}
-    return {"message": "No cached notebook found"}
+    """Temporarily disabled while summarize phase is turned off."""
+    _summarize_disabled()

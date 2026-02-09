@@ -9,9 +9,6 @@ import { HypothesisForm } from "@/components/HypothesisForm"
 
 import { StrategyViewer } from "@/components/StrategyViewer"
 import { ScriptRunner } from "@/components/ScriptRunner"
-import { PlotChooser } from "@/components/PlotChooser"
-import { NotebookEditor } from "@/components/NotebookEditor"
-import { ReportViewer } from "@/components/ReportViewer"
 import { RunSelector } from "@/components/RunSelector"
 import { Settings } from "@/components/Settings"
 import { ChatPanel } from "@/components/ChatPanel"
@@ -42,7 +39,7 @@ function App() {
   const { theme, toggleTheme } = useTheme()
   const { settings, updateSettings, availableModels } = useSettings()
   const { config, fetchRevealedApiKey } = useConfig()
-  const { savedData, saveData, clearData } = useAutoSave()
+  const { savedData, saveData, clearData } = useAutoSave(config?.working_dir)
 
   const { submitIntake, isLoading: intakeLoading, error: intakeError } = useIntake()
   const { updateManifest, isLoading: manifestLoading, error: manifestError } = useManifest()
@@ -130,8 +127,7 @@ function App() {
                 const runData = await runRes.json()
                 // Determine step based on completed stages
                 const stages = runData.stages_completed
-                if (stages.includes("report")) setCurrentStep("report")
-                else if (stages.includes("notebook")) setCurrentStep("notebook")
+                if (stages.includes("report") || stages.includes("notebook") || stages.includes("plots")) setCurrentStep("optimize")
                 else if (stages.includes("execute")) setCurrentStep("execute")
                 else if (stages.includes("understanding")) setCurrentStep("understanding")
                 else setCurrentStep("scan")
@@ -659,56 +655,10 @@ function App() {
                 model={settings.model}
                 apiKey={settings.apiKey}
                 onPlanUpdate={setScriptPlan}
-                onComplete={() => setCurrentStep("plots")}
-                onBack={() => setCurrentStep("strategy")}
-                onProceed={() => setCurrentStep("plots")}
-              />
-            </div>
-          )}
-
-          {/* ---- Phase 3: Summarize ---- */}
-
-          {currentStep === "plots" && manifest && (
-            <div className="max-w-5xl mx-auto">
-              <PlotChooser
-                manifestId={manifest.id}
-                onComplete={() => setCurrentStep("notebook")}
-                onBack={() => setCurrentStep("execute")}
-              />
-            </div>
-          )}
-
-          {currentStep === "notebook" && manifest && (
-            <div className="max-w-5xl mx-auto">
-              <NotebookEditor
-                manifestId={manifest.id}
-                onComplete={() => setCurrentStep("report")}
-              />
-              <div className="flex justify-between mt-6 pt-4 border-t">
-                <Button variant="outline" onClick={() => setCurrentStep("plots")}>
-                  Back to Plot Selection
-                </Button>
-                <Button onClick={() => setCurrentStep("report")}>
-                  Proceed to Report
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {currentStep === "report" && manifest && (
-            <div className="max-w-5xl mx-auto">
-              <ReportViewer
-                manifestId={manifest.id}
                 onComplete={() => setCurrentStep("optimize")}
+                onBack={() => setCurrentStep("strategy")}
+                onProceed={() => setCurrentStep("optimize")}
               />
-              <div className="flex justify-between mt-6 pt-4 border-t">
-                <Button variant="outline" onClick={() => setCurrentStep("notebook")}>
-                  Back to Notebook
-                </Button>
-                <Button onClick={() => setCurrentStep("optimize")}>
-                  Continue to Optimization
-                </Button>
-              </div>
             </div>
           )}
 

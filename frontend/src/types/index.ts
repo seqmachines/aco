@@ -281,15 +281,14 @@ export interface ApprovalResponse {
 // ---------------------------------------------------------------------------
 
 /** Top-level workflow phases */
-export type Phase = "understand" | "analyze" | "summarize";
+export type Phase = "understand" | "analyze";
 
 /** Sub-steps within each phase */
 export type UnderstandStep = "describe" | "scan" | "understanding";
-export type AnalyzeStep = "hypothesis" | "strategy" | "execute";
-export type SummarizeStep = "plots" | "notebook" | "report" | "optimize";
+export type AnalyzeStep = "hypothesis" | "strategy" | "execute" | "optimize";
 
 /** Flat union of every possible step (used as the primary navigation key) */
-export type AppStep = UnderstandStep | AnalyzeStep | SummarizeStep;
+export type AppStep = UnderstandStep | AnalyzeStep;
 
 /** Describes a single sub-step in the sidebar / progress bar */
 export interface StepDefinition {
@@ -326,16 +325,6 @@ export const PHASES: PhaseDefinition[] = [
       { id: "hypothesis", label: "Reference", shortLabel: "Reference" },
       { id: "strategy", label: "Analysis Strategy", shortLabel: "Strategy" },
       { id: "execute", label: "Execute Plan", shortLabel: "Execute" },
-    ],
-  },
-  {
-    id: "summarize",
-    label: "Summarize",
-    shortLabel: "Summarize",
-    steps: [
-      { id: "plots", label: "Choose Plots & Tests", shortLabel: "Plots" },
-      { id: "notebook", label: "Analysis Notebook", shortLabel: "Notebook" },
-      { id: "report", label: "Export Report", shortLabel: "Report" },
       { id: "optimize", label: "Optimize & Chat", shortLabel: "Optimize" },
     ],
   },

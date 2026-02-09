@@ -34,9 +34,6 @@ const stepLabels: Record<string, string> = {
   references: "Reference Selection",
   strategy: "Analysis Strategy",
   execute: "Script Execution",
-  plots: "Plot Selection",
-  notebook: "Notebook",
-  report: "QC Report",
   optimize: "Optimization",
 }
 

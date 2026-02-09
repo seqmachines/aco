@@ -31,7 +31,7 @@ class ChatMessageRequest(BaseModel):
     """Request to send a chat message."""
 
     manifest_id: str
-    step: str = Field(..., description="Workflow step: intake, scanning, manifest, understanding, scripts, notebook, report")
+    step: str = Field(..., description="Workflow step: describe, scan, understanding, hypothesis, strategy, execute, optimize")
     message: str
     model: str | None = None
     api_key: str | None = None
@@ -89,7 +89,7 @@ VALID_STEPS = {
     # New three-phase step names
     "describe", "scan", "understanding",
     "hypothesis", "references", "strategy", "execute",
-    "plots", "notebook", "report", "optimize",
+    "optimize",
     # Legacy names (backward compat)
     "intake", "scanning", "manifest", "scripts",
 }
@@ -122,7 +122,7 @@ async def send_message(request: ChatMessageRequest):
         context["manifest"] = manifest
 
     # Load understanding for relevant steps
-    if request.step in ("understanding", "strategy", "execute", "plots", "notebook", "report", "optimize", "scripts", "hypothesis", "references"):
+    if request.step in ("understanding", "strategy", "execute", "optimize", "scripts", "hypothesis", "references"):
         understanding = understanding_store.load(request.manifest_id)
         if understanding:
             context["understanding"] = understanding

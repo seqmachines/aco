@@ -308,37 +308,19 @@ class PlotSelectionResponse(BaseModel):
 
 @router.post("/plots", response_model=PlotSelectionResponse)
 async def save_plot_selection(request: SavePlotSelectionRequest):
-    """Save the user's plot and test selections."""
-    selection = PlotSelection(
-        manifest_id=request.manifest_id,
-        selected_plots=request.selected_plots,
-        custom_plot_requests=request.custom_plot_requests,
-        selected_tests=request.selected_tests,
-    )
-    path = _artifact_path(
-        request.manifest_id, "03_summarize/plots", "plot_selection.json"
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(selection.model_dump_json(indent=2))
-    return PlotSelectionResponse(
-        manifest_id=request.manifest_id,
-        selection=selection,
-        message="Plot selection saved",
+    """Temporarily disabled while summarize phase is turned off."""
+    raise HTTPException(
+        status_code=410,
+        detail="Summarize phase is temporarily disabled. Plot selection is unavailable.",
     )
 
 
 @router.get("/plots/{manifest_id}", response_model=PlotSelectionResponse)
 async def get_plot_selection(manifest_id: str):
-    """Load the saved plot selection for a run."""
-    path = _artifact_path(manifest_id, "03_summarize/plots", "plot_selection.json")
-    if not path.exists():
-        raise HTTPException(404, "No plot selection saved yet")
-    data = json.loads(path.read_text())
-    selection = PlotSelection.model_validate(data)
-    return PlotSelectionResponse(
-        manifest_id=manifest_id,
-        selection=selection,
-        message="Loaded from disk",
+    """Temporarily disabled while summarize phase is turned off."""
+    raise HTTPException(
+        status_code=410,
+        detail="Summarize phase is temporarily disabled. Plot selection is unavailable.",
     )
 
 

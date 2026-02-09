@@ -1063,7 +1063,7 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, model, ap
                             )}
                             <Button onClick={onProceed}>
                                 <ArrowRight className="h-4 w-4 mr-1" />
-                                Proceed to Summarize
+                                Proceed to Optimization
                             </Button>
                         </>
                     )}
@@ -1078,7 +1078,7 @@ export function ScriptRunner({ manifestId, initialPlan, understanding, model, ap
                             </Button>
                             <Button onClick={onProceed}>
                                 <ArrowRight className="h-4 w-4 mr-1" />
-                                Proceed to Summarize
+                                Proceed to Optimization
                             </Button>
                         </>
                     )}

@@ -91,7 +91,7 @@ export function RunSelector({ currentManifestId, onSelectRun, onNewRun }: RunSel
     }
 
     const getProgressPercent = (run: RunInfo) => {
-        const stages = ["understanding", "scripts", "notebook", "report"]
+        const stages = ["understanding", "strategy", "execute"]
         const completed = stages.filter(s => run.stages_completed.includes(s)).length
         return Math.round((completed / stages.length) * 100)
     }

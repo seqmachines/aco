@@ -13,6 +13,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      '/api': { target: 'http://localhost:7878', changeOrigin: true },
       '/intake': { target: 'http://localhost:7878', changeOrigin: true },
       '/scan': { target: 'http://localhost:7878', changeOrigin: true },
       '/manifest': { target: 'http://localhost:7878', changeOrigin: true },

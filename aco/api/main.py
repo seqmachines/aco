@@ -32,6 +32,7 @@ from aco.api.routes.scripts import set_stores as set_scripts_stores
 from aco.api.routes.understanding import set_stores as set_understanding_stores
 from aco.engine import UnderstandingStore
 from aco.manifest import ManifestStore
+from aco.path_display import get_display_path, get_display_storage_path
 
 
 # Default storage directory
@@ -102,7 +103,12 @@ async def lifespan(app: FastAPI):
     app.state.storage_dir = storage_dir
     app.state.working_dir = working_dir
     
-    print(f"aco API started. Storage: {storage_dir}, Working dir: {working_dir}")
+    display_working_dir = get_display_path(working_dir)
+    display_storage_dir = get_display_storage_path(storage_dir, working_dir)
+    print(
+        "aco API started. "
+        f"Storage: {display_storage_dir}, Working dir: {display_working_dir}"
+    )
 
     # If launched from CLI, print the "Server Ready" message now that we are actually ready
     cli_url = os.getenv("ACO_CLI_URL")

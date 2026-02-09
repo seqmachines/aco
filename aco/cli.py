@@ -11,6 +11,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from aco.path_display import get_display_path
+
 console = Console()
 app = typer.Typer(
     name="aco",
@@ -125,6 +127,7 @@ def init(
     Run this command from the directory containing your sequencing data.
     """
     cwd = Path.cwd()
+    display_cwd = get_display_path(cwd)
     
     # Check for Google API key - prompt if not set
     get_or_prompt_api_key()
@@ -134,7 +137,7 @@ def init(
     console.print(
         Panel(
             "[bold]aco[/bold] - Agentic Sequencing Quality Control\n"
-            f"[dim]Working directory: {cwd}[/dim]",
+            f"[dim]Working directory: {display_cwd}[/dim]",
             border_style="blue",
         )
     )
